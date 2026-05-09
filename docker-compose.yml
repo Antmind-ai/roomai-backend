@@ -118,7 +118,7 @@ services:
       REDIS_DB:        ${REDIS_DB:-0}
       ARQ_QUEUE_NAME:  ${ARQ_QUEUE_NAME:-titan:queue}
       ARQ_MAX_JOBS:    ${ARQ_MAX_JOBS:-100}
-      ARQ_JOB_TIMEOUT_SECONDS: ${ARQ_JOB_TIMEOUT_SECONDS:-300}
+      ARQ_JOB_TIMEOUT_SECONDS: ${ARQ_JOB_TIMEOUT_SECONDS:-1800}
       ARQ_KEEP_RESULT_SECONDS: ${ARQ_KEEP_RESULT_SECONDS:-3600}
       WORKERS_COUNT:   ${WORKERS_COUNT:-0}
       RUN_MIGRATIONS:  ${RUN_MIGRATIONS:-false}
@@ -127,8 +127,14 @@ services:
       APP_ENVIRONMENT:  ${APP_ENVIRONMENT:-production}
       FREE_LIFETIME_CREDITS: ${FREE_LIFETIME_CREDITS:-3}
       CREDITS_INTERNAL_API_KEY: ${CREDITS_INTERNAL_API_KEY:-}
+      DESIGN_UPLOAD_DIR: ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
+      DESIGN_OUTPUT_DIR: ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
+      HIGGSFIELD_TIMEOUT_MINUTES: ${HIGGSFIELD_TIMEOUT_MINUTES:-20}
+      HIGGSFIELD_BIN: ${HIGGSFIELD_BIN:-higgsfield}
     volumes:
       - ./logs:/app/logs
+      - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
+      - ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}:${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
     depends_on:
       postgres:
         condition: service_healthy
@@ -165,10 +171,16 @@ services:
       REDIS_DB:        ${REDIS_DB:-0}
       ARQ_QUEUE_NAME:  ${ARQ_QUEUE_NAME:-titan:queue}
       ARQ_MAX_JOBS:    ${ARQ_MAX_JOBS:-100}
-      ARQ_JOB_TIMEOUT_SECONDS: ${ARQ_JOB_TIMEOUT_SECONDS:-300}
+      ARQ_JOB_TIMEOUT_SECONDS: ${ARQ_JOB_TIMEOUT_SECONDS:-1800}
       ARQ_KEEP_RESULT_SECONDS: ${ARQ_KEEP_RESULT_SECONDS:-3600}
+      DESIGN_UPLOAD_DIR: ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
+      DESIGN_OUTPUT_DIR: ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
+      HIGGSFIELD_TIMEOUT_MINUTES: ${HIGGSFIELD_TIMEOUT_MINUTES:-20}
+      HIGGSFIELD_BIN: ${HIGGSFIELD_BIN:-higgsfield}
     volumes:
       - ./logs:/app/logs
+      - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
+      - ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}:${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
     depends_on:
       postgres:
         condition: service_healthy

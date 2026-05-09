@@ -25,6 +25,7 @@ class CreateDesignRequest(BaseModel):
     building_type: str = Field(..., min_length=1, max_length=80)
     style_id: str = Field(..., min_length=1, max_length=80)
     palette_id: str = Field(..., min_length=1, max_length=80)
+    prompt: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
     def validate_source_inputs(self) -> "CreateDesignRequest":
@@ -41,6 +42,7 @@ class CreateDesignResponse(BaseModel):
     status: str
     submitted_at: datetime
     queue_job_id: str | None = None
+    prompt: str | None = None
 
 
 class DesignHistoryItem(BaseModel):
@@ -52,9 +54,11 @@ class DesignHistoryItem(BaseModel):
     building_type: str
     style_id: str
     palette_id: str
+    prompt: str | None = None
     submitted_at: datetime
     updated_at: datetime
     preview_url: str | None = None
+    output_preview_url: str | None = None
 
 
 class DesignHistoryResponse(BaseModel):

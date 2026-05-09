@@ -161,11 +161,13 @@ async def list_my_design_requests(
                 building_type=design_request.building_type,
                 style_id=design_request.style_id,
                 palette_id=design_request.palette_id,
+                prompt=design_request.prompt,
                 submitted_at=design_request.submitted_at,
                 updated_at=design_request.updated_at,
                 preview_url=(
                     _build_preview_url(design_request.id) if preview_file is not None else None
                 ),
+                output_preview_url=design_request.output_preview_url,
             )
         )
 
@@ -273,6 +275,7 @@ async def submit_design_request(
         building_type=payload.building_type,
         style_id=payload.style_id,
         palette_id=payload.palette_id,
+        prompt=payload.prompt,
         status="queued",
     )
     db.add(design_request)
@@ -328,4 +331,5 @@ async def submit_design_request(
         status=design_request.status,
         submitted_at=design_request.submitted_at,
         queue_job_id=design_request.queue_job_id,
+        prompt=design_request.prompt,
     )

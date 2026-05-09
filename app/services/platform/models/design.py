@@ -54,7 +54,9 @@ class DesignRequest(Base):
         default="queued",
         server_default="queued",
     )
+    prompt: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     queue_job_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    output_preview_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

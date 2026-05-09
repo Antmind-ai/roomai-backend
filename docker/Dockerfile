@@ -29,17 +29,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
         curl \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://raw.githubusercontent.com/higgsfield-ai/cli/main/install.sh | sh \
     && groupadd -r titan \
     && useradd -r -g titan -d /app -s /sbin/nologin titan
 
 COPY --from=builder /venv /venv
 ENV PATH=/venv/bin:$PATH \
+    HOME=/app \
+    XDG_CONFIG_HOME=/app/.config \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1
 
 COPY --chown=titan:titan . .
-RUN chmod +x docker/entrypoint.sh
+RUN chmod +x docker/entrypoint.sh \
+    && mkdir -p /app/.config \
+    && chown titan:titan /app/.config
 
 USER titan
 

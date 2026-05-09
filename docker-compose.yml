@@ -135,6 +135,7 @@ services:
       - ./logs:/app/logs
       - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
       - ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}:${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
+      - higgsfield_config:/app/.config
     depends_on:
       postgres:
         condition: service_healthy
@@ -181,6 +182,7 @@ services:
       - ./logs:/app/logs
       - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
       - ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}:${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
+      - higgsfield_config:/app/.config
     depends_on:
       postgres:
         condition: service_healthy
@@ -246,6 +248,7 @@ volumes:
   redis_data:
   certbot_certs:
   certbot_www:
+  higgsfield_config:
 
 networks:
   titan_net:

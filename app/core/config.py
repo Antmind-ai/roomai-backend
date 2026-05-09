@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     design_output_dir: str = "/tmp/titan/design-outputs"
     higgsfield_timeout_minutes: int = Field(default=20, ge=1, le=120)
     higgsfield_bin: str = "higgsfield"
+    higgsfield_design_model: str = "seedream_v4_5"
     app_environment: str = "development"
     free_lifetime_credits: int = Field(default=3, ge=0, le=1000)
     credits_internal_api_key: str | None = Field(default=None)

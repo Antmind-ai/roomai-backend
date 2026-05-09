@@ -131,6 +131,7 @@ services:
       DESIGN_OUTPUT_DIR: ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
       HIGGSFIELD_TIMEOUT_MINUTES: ${HIGGSFIELD_TIMEOUT_MINUTES:-20}
       HIGGSFIELD_BIN: ${HIGGSFIELD_BIN:-higgsfield}
+      HIGGSFIELD_DESIGN_MODEL: ${HIGGSFIELD_DESIGN_MODEL:-seedream_v4_5}
     volumes:
       - ./logs:/app/logs
       - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
@@ -178,6 +179,7 @@ services:
       DESIGN_OUTPUT_DIR: ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
       HIGGSFIELD_TIMEOUT_MINUTES: ${HIGGSFIELD_TIMEOUT_MINUTES:-20}
       HIGGSFIELD_BIN: ${HIGGSFIELD_BIN:-higgsfield}
+      HIGGSFIELD_DESIGN_MODEL: ${HIGGSFIELD_DESIGN_MODEL:-seedream_v4_5}
     volumes:
       - ./logs:/app/logs
       - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}

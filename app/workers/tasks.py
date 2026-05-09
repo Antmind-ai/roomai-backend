@@ -86,7 +86,7 @@ async def process_design_request_task(
         )
 
         result_obj = await generate_image(
-            model="seedream_4_5",
+            model=settings.higgsfield_design_model,
             prompt=prompt,
             image_path=str(image_path),
             aspect_ratio="1:1",

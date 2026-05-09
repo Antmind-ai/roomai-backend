@@ -40,3 +40,22 @@ class CreateDesignResponse(BaseModel):
     user_id: uuid.UUID
     status: str
     submitted_at: datetime
+    queue_job_id: str | None = None
+
+
+class DesignHistoryItem(BaseModel):
+    design_request_id: uuid.UUID
+    user_id: uuid.UUID
+    source: DesignSource
+    status: str
+    input_upload_id: uuid.UUID | None = None
+    building_type: str
+    style_id: str
+    palette_id: str
+    submitted_at: datetime
+    updated_at: datetime
+    preview_url: str | None = None
+
+
+class DesignHistoryResponse(BaseModel):
+    items: list[DesignHistoryItem]

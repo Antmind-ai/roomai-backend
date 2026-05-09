@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     secret_key: str = Field(..., min_length=32)
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = Field(default=60 * 24 * 30, ge=1)
+    design_upload_dir: str = "/tmp/titan/design-inputs"
+    design_upload_max_mb: int = Field(default=15, ge=1, le=50)
     api_v1_prefix: str = "/api/v1"
     log_level: str = "INFO"
 
@@ -79,6 +81,11 @@ class Settings(BaseSettings):
             encoded_password = quote(self.redis_password, safe="")
             return f"redis://:{encoded_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    @computed_field
+    @property
+    def design_upload_max_bytes(self) -> int:
+        return self.design_upload_max_mb * 1024 * 1024
 
 
 @lru_cache

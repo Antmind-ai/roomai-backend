@@ -19,7 +19,8 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     # pgvector: vector similarity search
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # TODO: Re-enable when pgvector is available on the Postgres instance
+    # op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     # uuid-ossp: UUID generation functions
     op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
     # pg_trgm: trigram similarity for text search

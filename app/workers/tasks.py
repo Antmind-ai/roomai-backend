@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.database import get_db_context
 from app.services.higgsfield.client import HiggsfieldError, generate_image
-from app.services.platform.models import DesignRequest
+from app.services.platform.models import DesignRequest, DeviceUser
 
 
 async def health_ping_task(ctx: dict[str, Any], source: str = "api") -> dict[str, str]:
@@ -153,4 +153,78 @@ async def process_design_request_task(
         "status": "completed",
         "design_request_id": design_request_id,
         "output_url": result_obj.url,
+    }
+
+
+async def cleanup_user_data_task(
+    ctx: dict[str, Any],
+    user_id: str,
+) -> dict[str, Any]:
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError as exc:
+        logger.error("Invalid user_id for cleanup task | id={}", user_id)
+        raise RuntimeError("Invalid user_id") from exc
+
+    logger.info("Starting user data cleanup | user_id={}", uid)
+
+    deleted_files: list[str] = []
+
+    async with get_db_context() as db:
+        result = await db.execute(
+            select(DeviceUser).where(DeviceUser.id == uid)
+        )
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            logger.warning("User not found for cleanup | user_id={}", uid)
+            return {"status": "missing", "user_id": user_id}
+
+        result = await db.execute(
+            select(DesignRequest.input_filename).where(
+                DesignRequest.user_id == uid,
+                DesignRequest.input_filename.isnot(None),
+            )
+        )
+        filenames = [row[0] for row in result.all()]
+
+    for filename in filenames:
+        file_path = Path(settings.design_upload_dir) / str(uid) / filename
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                deleted_files.append(str(file_path))
+        except OSError as exc:
+            logger.error(
+                "Failed to delete design file | user_id={} | path={} | error={}",
+                uid,
+                file_path,
+                exc,
+            )
+
+    user_dir = Path(settings.design_upload_dir) / str(uid)
+    try:
+        if user_dir.exists() and user_dir.is_dir():
+            remaining = list(user_dir.iterdir())
+            if not remaining:
+                user_dir.rmdir()
+    except OSError as exc:
+        logger.error(
+            "Failed to remove user directory | user_id={} | path={} | error={}",
+            uid,
+            user_dir,
+            exc,
+        )
+
+    logger.info(
+        "User data cleanup completed | user_id={} | deleted_files={}",
+        uid,
+        len(deleted_files),
+    )
+
+    return {
+        "status": "completed",
+        "user_id": user_id,
+        "deleted_files": deleted_files,
+        "deleted_count": len(deleted_files),
     }

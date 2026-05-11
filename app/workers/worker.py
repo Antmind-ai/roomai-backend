@@ -2,7 +2,11 @@ from arq.connections import RedisSettings
 from loguru import logger
 
 from app.core.config import settings
-from app.workers.tasks import health_ping_task, process_design_request_task
+from app.workers.tasks import (
+    cleanup_user_data_task,
+    health_ping_task,
+    process_design_request_task,
+)
 
 
 async def startup(ctx: dict) -> None:
@@ -14,7 +18,7 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions = (health_ping_task, process_design_request_task)
+    functions = (health_ping_task, process_design_request_task, cleanup_user_data_task)
     redis_settings = RedisSettings(
         host=settings.redis_host,
         port=settings.redis_port,

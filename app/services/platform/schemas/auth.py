@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -24,3 +25,9 @@ class DeviceLoginResponse(BaseModel):
 
 class AuthMeResponse(BaseModel):
     user_id: uuid.UUID
+
+
+class DeleteAccountResponse(BaseModel):
+    user_id: uuid.UUID
+    deleted_at: datetime
+    job_id: str

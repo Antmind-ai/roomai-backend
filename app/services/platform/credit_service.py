@@ -27,7 +27,12 @@ class InsufficientCreditsError(Exception):
 
 
 async def get_credit_balance(db: AsyncSession, user_id: uuid.UUID) -> int:
-    result = await db.execute(select(DeviceUser.credit_balance).where(DeviceUser.id == user_id))
+    result = await db.execute(
+        select(DeviceUser.credit_balance).where(
+            DeviceUser.id == user_id,
+            DeviceUser.deleted_at.is_(None),
+        )
+    )
     balance = result.scalar_one_or_none()
     if balance is None:
         raise ValueError("User not found")
@@ -126,7 +131,10 @@ async def apply_credit_delta(
 
 async def _lock_user(db: AsyncSession, *, user_id: uuid.UUID) -> DeviceUser:
     result = await db.execute(
-        select(DeviceUser).where(DeviceUser.id == user_id).with_for_update()
+        select(DeviceUser).where(
+            DeviceUser.id == user_id,
+            DeviceUser.deleted_at.is_(None),
+        ).with_for_update()
     )
     user = result.scalar_one_or_none()
     if user is None:

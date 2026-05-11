@@ -11,7 +11,12 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import InvalidTokenError, create_access_token, decode_access_token
 from app.services.platform.models import CreditLedgerEvent, DeviceUser
-from app.services.platform.schemas.auth import AuthMeResponse, DeviceLoginRequest, DeviceLoginResponse
+from app.services.platform.schemas.auth import (
+    AuthMeResponse,
+    DeleteAccountResponse,
+    DeviceLoginRequest,
+    DeviceLoginResponse,
+)
 
 router = APIRouter(prefix="/auth")
 
@@ -54,7 +59,12 @@ async def device_login(
     now = datetime.now(UTC)
     initial_credits = settings.free_lifetime_credits
 
-    result = await db.execute(select(DeviceUser).where(DeviceUser.device_id == payload.device_id))
+    result = await db.execute(
+        select(DeviceUser).where(
+            DeviceUser.device_id == payload.device_id,
+            DeviceUser.deleted_at.is_(None),
+        )
+    )
     user = result.scalar_one_or_none()
 
     if user is None:
@@ -82,7 +92,10 @@ async def device_login(
             # Handle race condition where another request created the same device user.
             await db.rollback()
             result = await db.execute(
-                select(DeviceUser).where(DeviceUser.device_id == payload.device_id)
+                select(DeviceUser).where(
+                    DeviceUser.device_id == payload.device_id,
+                    DeviceUser.deleted_at.is_(None),
+                )
             )
             user = result.scalar_one()
             user.last_seen_at = now
@@ -108,5 +121,57 @@ async def device_login(
     response_model=AuthMeResponse,
     summary="Return current authenticated user",
 )
-async def auth_me(current_user_id: uuid.UUID = Depends(get_current_user_id)) -> AuthMeResponse:
+async def auth_me(
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> AuthMeResponse:
+    result = await db.execute(
+        select(DeviceUser.id).where(
+            DeviceUser.id == current_user_id,
+            DeviceUser.deleted_at.is_(None),
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
     return AuthMeResponse(user_id=current_user_id)
+
+
+@router.delete(
+    "/me",
+    response_model=DeleteAccountResponse,
+    summary="Delete the current user's account and all associated data",
+)
+async def delete_account(
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> DeleteAccountResponse:
+    result = await db.execute(
+        select(DeviceUser).where(
+            DeviceUser.id == current_user_id,
+            DeviceUser.deleted_at.is_(None),
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found or already deleted",
+        )
+
+    now = datetime.now(UTC)
+    user.deleted_at = now
+    await db.commit()
+
+    from app.workers.client import enqueue_job
+
+    job_id = await enqueue_job("cleanup_user_data_task", str(current_user_id))
+
+    return DeleteAccountResponse(
+        user_id=current_user_id,
+        deleted_at=now,
+        job_id=job_id,
+    )

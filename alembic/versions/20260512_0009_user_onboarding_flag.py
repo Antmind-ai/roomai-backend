@@ -27,6 +27,11 @@ def upgrade() -> None:
             server_default=sa.text("false"),
         ),
     )
+    op.execute(
+        sa.text(
+            "UPDATE platform_users SET onboarding_completed = true WHERE deleted_at IS NULL"
+        )
+    )
 
 
 def downgrade() -> None:

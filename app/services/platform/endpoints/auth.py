@@ -90,18 +90,43 @@ async def device_login(
                 )
                 await db.flush()
         except IntegrityError:
-            # Handle race condition where another request created the same device user.
+            # The device_id already exists — either a race condition or a
+            # soft-deleted account being reactivated.
             await db.rollback()
             result = await db.execute(
                 select(DeviceUser).where(
                     DeviceUser.device_id == payload.device_id,
-                    DeviceUser.deleted_at.is_(None),
                 )
             )
             user = result.scalar_one()
-            user.last_seen_at = now
-            db.add(user)
-            await db.flush()
+
+            if user.deleted_at is not None:
+                user.deleted_at = None
+                user.credit_balance = initial_credits
+                user.onboarding_completed = False
+                user.last_seen_at = now
+
+                db.add(user)
+
+                if initial_credits > 0:
+                    await db.flush()
+                    db.add(
+                        CreditLedgerEvent(
+                            user_id=user.id,
+                            delta=initial_credits,
+                            balance_after=initial_credits,
+                            source="signup_grant",
+                            reason="Initial free lifetime credits (reactivated account)",
+                        )
+                    )
+                    await db.flush()
+
+                await db.commit()
+                await db.refresh(user)
+            else:
+                user.last_seen_at = now
+                db.add(user)
+                await db.flush()
     else:
         user.last_seen_at = now
         await db.flush()

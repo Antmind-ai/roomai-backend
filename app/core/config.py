@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     revenuecat_webhook_secret: str | None = Field(default=None)
     subscription_weekly_product_id: str = "weekly"
     subscription_yearly_product_id: str = "yearly"
-    subscription_weekly_credits: int = Field(default=50, ge=1, le=10000)
+    subscription_weekly_credits: int = Field(default=350, ge=1, le=10000)
     subscription_yearly_credits: int = Field(default=500, ge=1, le=100000)
 
     # ── Database ──────────────────────────────────────────────────────────────

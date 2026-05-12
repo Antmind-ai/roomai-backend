@@ -256,6 +256,7 @@ async def delete_design_request(
 
 @router.get(
     "/{design_request_id}/preview",
+    response_model=None,
     summary="Serve uploaded source image preview for a design request",
 )
 async def get_design_request_preview(

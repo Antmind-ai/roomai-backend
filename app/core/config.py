@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     # ── RevenueCat ─────────────────────────────────────────────────────────────
     revenuecat_api_key: str | None = Field(default=None)
     revenuecat_webhook_secret: str | None = Field(default=None)
+    # NOTE: configure these env vars with real App Store / Play product SKUs in deployed envs.
+    # The fallback values below are only safe for local development placeholders.
     subscription_weekly_product_id: str = "weekly"
     subscription_yearly_product_id: str = "yearly"
     subscription_weekly_credits: int = Field(default=350, ge=1, le=10000)

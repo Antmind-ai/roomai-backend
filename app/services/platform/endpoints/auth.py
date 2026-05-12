@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import InvalidTokenError, create_access_token, decode_access_token
 from app.services.platform.models import CreditLedgerEvent, DeviceUser
+from app.services.platform.models.subscription import PurchaseRecord
 from app.services.platform.schemas.auth import (
     AuthMeResponse,
     DeleteAccountResponse,
@@ -18,6 +19,7 @@ from app.services.platform.schemas.auth import (
     DeviceLoginResponse,
     MarkOnboardingCompletedResponse,
 )
+from app.services.platform import revenuecat_api
 
 router = APIRouter(prefix="/auth")
 
@@ -217,6 +219,33 @@ async def delete_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found or already deleted",
         )
+
+    subscription_result = await db.execute(
+        select(PurchaseRecord)
+        .where(PurchaseRecord.user_id == current_user_id)
+        .where(PurchaseRecord.is_active_subscription.is_(True))
+        .order_by(PurchaseRecord.created_at.desc())
+        .limit(1)
+    )
+    active_subscription = subscription_result.scalar_one_or_none()
+
+    if active_subscription and settings.revenuecat_api_key:
+        try:
+            await revenuecat_api.cancel_subscription(
+                app_user_id=str(current_user_id),
+                product_identifier=active_subscription.revenuecat_product_id,
+            )
+            logger.info(
+                "Cancelled subscription for user %s: product=%s",
+                str(current_user_id),
+                active_subscription.revenuecat_product_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to cancel subscription for user %s: %s",
+                str(current_user_id),
+                exc,
+            )
 
     now = datetime.now(UTC)
     user.deleted_at = now

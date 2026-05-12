@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     log_level: str = "INFO"
 
+    # ── Cloudflare R2 ──────────────────────────────────────────────────────────
+    r2_endpoint_url: str | None = Field(default=None)
+    r2_bucket_name: str | None = Field(default=None)
+    r2_access_key_id: str | None = Field(default=None)
+    r2_secret_access_key: str | None = Field(default=None)
+    r2_public_url: str | None = Field(default=None)
+    r2_presigned_url_expiry: int = Field(default=3600, ge=60, le=86400)
+
     # ── RevenueCat ─────────────────────────────────────────────────────────────
     revenuecat_api_key: str | None = Field(default=None)
     revenuecat_webhook_secret: str | None = Field(default=None)

@@ -3,8 +3,8 @@ import mimetypes
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,12 @@ from app.services.platform.schemas.design import (
     DesignHistoryResponse,
     DesignInputUploadResponse,
     DesignSource,
+)
+from app.services.r2 import (
+    build_r2_key,
+    generate_presigned_url,
+    object_exists,
+    upload_file_async,
 )
 from app.workers.client import enqueue_job
 
@@ -40,17 +46,6 @@ def _resolve_upload_suffix(upload_file: UploadFile) -> str:
     return ALLOWED_CONTENT_TYPES.get(upload_file.content_type or "", ".jpg")
 
 
-def _resolve_user_upload_file(user_id: uuid.UUID, upload_id: uuid.UUID) -> Path | None:
-    user_dir = Path(settings.design_upload_dir) / str(user_id)
-    if not user_dir.exists():
-        return None
-
-    matches = list(user_dir.glob(f"{upload_id}.*"))
-    if not matches:
-        return None
-    return matches[0]
-
-
 def _resolve_preview_file_for_request(
     user_id: uuid.UUID,
     design_request: DesignRequest,
@@ -59,11 +54,7 @@ def _resolve_preview_file_for_request(
         file_path = Path(settings.design_upload_dir) / str(user_id) / design_request.input_filename
         if file_path.exists():
             return file_path
-
-    if design_request.input_upload_id is None:
-        return None
-
-    return _resolve_user_upload_file(user_id, design_request.input_upload_id)
+    return None
 
 
 def _build_preview_url(design_request_id: uuid.UUID) -> str:
@@ -80,50 +71,55 @@ async def upload_design_input_image(
     file: UploadFile = File(...),
     current_user_id: uuid.UUID = Depends(get_current_user_id),
 ) -> DesignInputUploadResponse:
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
+    if not settings.r2_bucket_name:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage is not configured",
+        )
+
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only JPG, PNG, WEBP, and HEIC images are supported",
         )
 
-    user_upload_dir = Path(settings.design_upload_dir) / str(current_user_id)
-    user_upload_dir.mkdir(parents=True, exist_ok=True)
-
     upload_id = uuid.uuid4()
     suffix = _resolve_upload_suffix(file)
-    output_path = user_upload_dir / f"{upload_id}{suffix}"
+    filename = f"{upload_id}{suffix}"
+    r2_key = build_r2_key(str(current_user_id), filename)
+
     size_bytes = 0
+    chunks: list[bytes] = []
 
     try:
-        with output_path.open("wb") as output_file:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
 
-                size_bytes += len(chunk)
-                if size_bytes > settings.design_upload_max_bytes:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=(
-                            f"Image exceeds max size of {settings.design_upload_max_mb}MB"
-                        ),
-                    )
+            size_bytes += len(chunk)
+            if size_bytes > settings.design_upload_max_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"Image exceeds max size of {settings.design_upload_max_mb}MB"
+                    ),
+                )
 
-                output_file.write(chunk)
-    except HTTPException:
-        if output_path.exists():
-            output_path.unlink()
-        raise
+            chunks.append(chunk)
     finally:
         await file.close()
+
+    await upload_file_async(r2_key, b"".join(chunks), content_type)
 
     return DesignInputUploadResponse(
         upload_id=upload_id,
         user_id=current_user_id,
-        filename=output_path.name,
-        content_type=file.content_type,
+        filename=filename,
+        content_type=content_type,
         size_bytes=size_bytes,
+        r2_key=r2_key,
     )
 
 
@@ -150,7 +146,14 @@ async def list_my_design_requests(
 
     history_items: list[DesignHistoryItem] = []
     for design_request in design_requests:
-        preview_file = _resolve_preview_file_for_request(current_user_id, design_request)
+        preview_url: str | None = None
+        if design_request.input_r2_key and settings.r2_endpoint_url:
+            preview_url = _build_preview_url(design_request.id)
+        elif design_request.input_filename:
+            preview_file = _resolve_preview_file_for_request(current_user_id, design_request)
+            if preview_file:
+                preview_url = _build_preview_url(design_request.id)
+
         history_items.append(
             DesignHistoryItem(
                 design_request_id=design_request.id,
@@ -158,15 +161,14 @@ async def list_my_design_requests(
                 source=DesignSource(design_request.source),
                 status=design_request.status,
                 input_upload_id=design_request.input_upload_id,
+                input_r2_key=design_request.input_r2_key,
                 building_type=design_request.building_type,
                 style_id=design_request.style_id,
                 palette_id=design_request.palette_id,
                 prompt=design_request.prompt,
                 submitted_at=design_request.submitted_at,
                 updated_at=design_request.updated_at,
-                preview_url=(
-                    _build_preview_url(design_request.id) if preview_file is not None else None
-                ),
+                preview_url=preview_url,
                 output_preview_url=design_request.output_preview_url,
             )
         )
@@ -198,22 +200,28 @@ async def get_design_request(
             detail="Design request not found",
         )
 
-    preview_file = _resolve_preview_file_for_request(current_user_id, design_request)
+    preview_url: str | None = None
+    if design_request.input_r2_key and settings.r2_endpoint_url:
+        preview_url = _build_preview_url(design_request.id)
+    elif design_request.input_filename:
+        preview_file = _resolve_preview_file_for_request(current_user_id, design_request)
+        if preview_file:
+            preview_url = _build_preview_url(design_request.id)
+
     return DesignHistoryItem(
         design_request_id=design_request.id,
         user_id=design_request.user_id,
         source=DesignSource(design_request.source),
         status=design_request.status,
         input_upload_id=design_request.input_upload_id,
+        input_r2_key=design_request.input_r2_key,
         building_type=design_request.building_type,
         style_id=design_request.style_id,
         palette_id=design_request.palette_id,
         prompt=design_request.prompt,
         submitted_at=design_request.submitted_at,
         updated_at=design_request.updated_at,
-        preview_url=(
-            _build_preview_url(design_request.id) if preview_file is not None else None
-        ),
+        preview_url=preview_url,
         output_preview_url=design_request.output_preview_url,
     )
 
@@ -254,7 +262,7 @@ async def get_design_request_preview(
     design_request_id: uuid.UUID,
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
-) -> FileResponse:
+) -> RedirectResponse | FileResponse:
     result = await db.execute(
         select(DesignRequest).where(
             DesignRequest.id == design_request_id,
@@ -269,17 +277,22 @@ async def get_design_request_preview(
             detail="Design request not found",
         )
 
-    preview_file = _resolve_preview_file_for_request(current_user_id, design_request)
-    if preview_file is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Uploaded design input not found",
-        )
+    if design_request.input_r2_key and settings.r2_endpoint_url:
+        presigned_url = generate_presigned_url(design_request.input_r2_key)
+        return RedirectResponse(url=presigned_url, status_code=302)
 
-    media_type, _ = mimetypes.guess_type(preview_file.name)
-    return FileResponse(
-        preview_file,
-        media_type=media_type or "application/octet-stream",
+    if design_request.input_filename:
+        preview_file = _resolve_preview_file_for_request(current_user_id, design_request)
+        if preview_file:
+            media_type, _ = mimetypes.guess_type(preview_file.name)
+            return FileResponse(
+                preview_file,
+                media_type=media_type or "application/octet-stream",
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Uploaded design input not found",
     )
 
 
@@ -294,7 +307,7 @@ async def submit_design_request(
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> CreateDesignResponse:
-    existing_upload: Path | None = None
+    input_filename: str | None = None
 
     if payload.source == DesignSource.UPLOAD:
         if payload.input_upload_id is None:
@@ -303,18 +316,33 @@ async def submit_design_request(
                 detail="input_upload_id is required for uploaded source",
             )
 
-        existing_upload = _resolve_user_upload_file(current_user_id, payload.input_upload_id)
-        if existing_upload is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Uploaded design input not found",
-            )
+        if settings.r2_endpoint_url:
+            if not payload.input_r2_key:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="input_r2_key is required for uploaded source",
+                )
+            if not object_exists(payload.input_r2_key):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uploaded design input not found in storage",
+                )
+        else:
+            user_upload_dir = Path(settings.design_upload_dir) / str(current_user_id)
+            matches = list(user_upload_dir.glob(f"{payload.input_upload_id}.*"))
+            if not matches:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uploaded design input not found",
+                )
+            input_filename = matches[0].name
 
     design_request = DesignRequest(
         user_id=current_user_id,
         source=payload.source.value,
         input_upload_id=payload.input_upload_id,
-        input_filename=existing_upload.name if existing_upload is not None else None,
+        input_r2_key=payload.input_r2_key if settings.r2_endpoint_url else None,
+        input_filename=input_filename,
         example_photo_id=payload.example_photo_id,
         building_type=payload.building_type,
         style_id=payload.style_id,

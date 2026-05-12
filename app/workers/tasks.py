@@ -10,6 +10,10 @@ from app.core.config import settings
 from app.core.database import get_db_context
 from app.services.higgsfield.client import HiggsfieldError, generate_image
 from app.services.platform.models import DesignRequest, DeviceUser
+from app.services.r2 import (
+    delete_object_async,
+    download_to_path_async,
+)
 
 
 async def health_ping_task(ctx: dict[str, Any], source: str = "api") -> dict[str, str]:
@@ -32,20 +36,46 @@ def _build_design_prompt(design_request: DesignRequest) -> str:
     return ". ".join(p for p in parts if p)
 
 
-def _resolve_input_image_path(design_request: DesignRequest) -> Path:
-    if not design_request.input_filename:
-        raise HiggsfieldError("No input image filename on design request")
+async def _resolve_input_image_path(design_request: DesignRequest) -> tuple[Path, bool]:
+    is_temp = False
 
-    image_path = (
-        Path(settings.design_upload_dir)
-        / str(design_request.user_id)
-        / design_request.input_filename
-    )
+    if design_request.input_r2_key:
+        temp_dir = Path(settings.design_upload_dir) / str(design_request.user_id)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        filename = design_request.input_r2_key.rsplit("/", 1)[-1]
+        local_path = temp_dir / filename
 
-    if not image_path.exists():
-        raise HiggsfieldError(f"Input image not found on disk: {image_path}")
+        logger.debug(
+            "Downloading design input from R2 | key={} | local_path={}",
+            design_request.input_r2_key,
+            local_path,
+        )
+        await download_to_path_async(design_request.input_r2_key, local_path)
+        is_temp = True
+        return local_path, is_temp
 
-    return image_path
+    if design_request.input_filename:
+        image_path = (
+            Path(settings.design_upload_dir)
+            / str(design_request.user_id)
+            / design_request.input_filename
+        )
+
+        if not image_path.exists():
+            raise HiggsfieldError(f"Input image not found on disk: {image_path}")
+
+        return image_path, is_temp
+
+    raise HiggsfieldError("No input image filename or R2 key on design request")
+
+
+def _cleanup_temp_file(file_path: Path) -> None:
+    try:
+        if file_path.exists():
+            file_path.unlink()
+            logger.debug("Cleaned up temp design input | path={}", file_path)
+    except OSError as exc:
+        logger.warning("Failed to cleanup temp design input | path={} | error={}", file_path, exc)
 
 
 async def process_design_request_task(
@@ -74,8 +104,13 @@ async def process_design_request_task(
         design_request.error_message = None
         await db.commit()
 
+    temp_path: Path | None = None
+
     try:
-        image_path = _resolve_input_image_path(design_request)
+        image_path, is_temp = await _resolve_input_image_path(design_request)
+        if is_temp:
+            temp_path = image_path
+
         prompt = _build_design_prompt(design_request)
 
         logger.info(
@@ -148,6 +183,10 @@ async def process_design_request_task(
 
         raise
 
+    finally:
+        if temp_path is not None:
+            _cleanup_temp_file(temp_path)
+
     logger.info("Design request completed by ARQ worker | request_id={}", request_id)
     return {
         "status": "completed",
@@ -168,6 +207,7 @@ async def cleanup_user_data_task(
 
     logger.info("Starting user data cleanup | user_id={}", uid)
 
+    deleted_keys: list[str] = []
     deleted_files: list[str] = []
 
     async with get_db_context() as db:
@@ -181,12 +221,33 @@ async def cleanup_user_data_task(
             return {"status": "missing", "user_id": user_id}
 
         result = await db.execute(
+            select(DesignRequest.input_r2_key).where(
+                DesignRequest.user_id == uid,
+                DesignRequest.input_r2_key.isnot(None),
+            )
+        )
+        r2_keys = [row[0] for row in result.all() if row[0]]
+
+        result = await db.execute(
             select(DesignRequest.input_filename).where(
                 DesignRequest.user_id == uid,
                 DesignRequest.input_filename.isnot(None),
             )
         )
-        filenames = [row[0] for row in result.all()]
+        filenames = [row[0] for row in result.all() if row[0]]
+
+    for key in r2_keys:
+        try:
+            deleted = await delete_object_async(key)
+            if deleted:
+                deleted_keys.append(key)
+        except Exception as exc:
+            logger.error(
+                "Failed to delete R2 object | user_id={} | key={} | error={}",
+                uid,
+                key,
+                exc,
+            )
 
     for filename in filenames:
         file_path = Path(settings.design_upload_dir) / str(uid) / filename
@@ -217,14 +278,16 @@ async def cleanup_user_data_task(
         )
 
     logger.info(
-        "User data cleanup completed | user_id={} | deleted_files={}",
+        "User data cleanup completed | user_id={} | deleted_r2_objects={} | deleted_local_files={}",
         uid,
+        len(deleted_keys),
         len(deleted_files),
     )
 
     return {
         "status": "completed",
         "user_id": user_id,
-        "deleted_files": deleted_files,
-        "deleted_count": len(deleted_files),
+        "deleted_r2_keys": deleted_keys,
+        "deleted_local_files": deleted_files,
+        "deleted_count": len(deleted_keys) + len(deleted_files),
     }

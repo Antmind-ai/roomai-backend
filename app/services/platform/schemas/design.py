@@ -16,11 +16,13 @@ class DesignInputUploadResponse(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    r2_key: str
 
 
 class CreateDesignRequest(BaseModel):
     source: DesignSource
     input_upload_id: uuid.UUID | None = None
+    input_r2_key: str | None = Field(default=None, max_length=500)
     example_photo_id: str | None = Field(default=None, max_length=120)
     building_type: str = Field(..., min_length=1, max_length=80)
     style_id: str = Field(..., min_length=1, max_length=80)
@@ -51,6 +53,7 @@ class DesignHistoryItem(BaseModel):
     source: DesignSource
     status: str
     input_upload_id: uuid.UUID | None = None
+    input_r2_key: str | None = None
     building_type: str
     style_id: str
     palette_id: str

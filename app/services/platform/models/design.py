@@ -44,6 +44,7 @@ class DesignRequest(Base):
         nullable=True,
     )
     input_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_r2_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     example_photo_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     building_type: Mapped[str] = mapped_column(String(80), nullable=False)
     style_id: Mapped[str] = mapped_column(String(80), nullable=False)

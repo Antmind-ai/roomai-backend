@@ -59,6 +59,19 @@ def extract_latest_purchase(
     }
 
 
+async def cancel_subscription(
+    app_user_id: str,
+    product_identifier: str,
+) -> dict[str, Any]:
+    url = f"{REVENUECAT_API_BASE}/v1/subscribers/{app_user_id}/subscriptions/{product_identifier}/cancel"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, headers=_build_headers())
+        if response.status_code == 404:
+            return {"error": "subscription_not_found"}
+        response.raise_for_status()
+        return response.json()
+
+
 def parse_iso_datetime(value: str | None) -> datetime | None:
     if not value:
         return None

@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loguru import logger
+
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import InvalidTokenError, create_access_token, decode_access_token

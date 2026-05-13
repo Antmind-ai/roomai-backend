@@ -23,7 +23,7 @@ class HiggsfieldGenerateResult:
         self.job_id = job_id
 
 
-def _is_retryable_higgsfield_error(message: str) -> bool:
+def is_retryable_higgsfield_error(message: str) -> bool:
     normalized = message.lower()
     retryable_markers = (
         "http 500",
@@ -210,7 +210,7 @@ async def generate_image(
             return _parse_result(stdout)
         except HiggsfieldError as exc:
             last_error = exc
-            retryable = _is_retryable_higgsfield_error(str(exc))
+            retryable = is_retryable_higgsfield_error(str(exc))
             if attempt >= max_attempts or not retryable:
                 raise
 

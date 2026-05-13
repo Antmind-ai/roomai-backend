@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     enable_higgsfield_backend: bool = False
     fal_key: str | None = Field(default=None)
     fal_timeout_minutes: int = Field(default=20, ge=1, le=120)
-    fal_design_model: str = "fal-ai/nano-banana-pro/edit"
+    fal_design_model: str = (
+        "fal-ai/bytedance/seedream/v4.5/edit,"
+        "fal-ai/nano-banana-pro/edit"
+    )
     fal_design_aspect_ratio: str = "1:1"
     fal_design_resolution: Literal["1K", "2K", "4K"] = "1K"
     fal_design_output_format: Literal["jpeg", "png", "webp"] = "png"
@@ -124,6 +127,27 @@ class Settings(BaseSettings):
     @property
     def design_upload_max_bytes(self) -> int:
         return self.design_upload_max_mb * 1024 * 1024
+
+    @computed_field
+    @property
+    def fal_design_model_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        for raw_model in self.fal_design_model.split(","):
+            model = raw_model.strip()
+            if not model or model in seen:
+                continue
+            candidates.append(model)
+            seen.add(model)
+
+        if not candidates:
+            raise ValueError(
+                "FAL_DESIGN_MODEL must contain at least one model id "
+                "(comma-separated is supported)."
+            )
+
+        return candidates
 
 
 @lru_cache

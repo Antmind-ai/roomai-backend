@@ -51,14 +51,36 @@ async def _generate_fal(
     prompt: str,
     image_path: str,
 ) -> DesignGenerationResult:
-    return await fal_provider.generate_image(
-        model=settings.fal_design_model,
-        prompt=prompt,
-        image_path=image_path,
-        aspect_ratio=settings.fal_design_aspect_ratio,
-        resolution=settings.fal_design_resolution,
-        output_format=settings.fal_design_output_format,
-        timeout=settings.fal_timeout_minutes * 60,
+    errors: list[str] = []
+    candidates = settings.fal_design_model_candidates
+
+    for model in candidates:
+        try:
+            if len(candidates) > 1:
+                logger.info("fal.ai model attempt | model={}", model)
+
+            return await fal_provider.generate_image(
+                model=model,
+                prompt=prompt,
+                image_path=image_path,
+                aspect_ratio=settings.fal_design_aspect_ratio,
+                resolution=settings.fal_design_resolution,
+                output_format=settings.fal_design_output_format,
+                timeout=settings.fal_timeout_minutes * 60,
+            )
+        except Exception as exc:
+            error_msg = str(exc)[:500]
+            errors.append(f"{model}: {error_msg}")
+            if len(candidates) > 1:
+                logger.warning(
+                    "fal.ai model attempt failed | model={} | error={}",
+                    model,
+                    error_msg,
+                )
+
+    raise fal_provider.FalGenerationError(
+        "fal.ai generation failed for all configured models | "
+        + " ; ".join(errors)
     )
 
 

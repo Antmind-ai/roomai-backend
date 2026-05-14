@@ -157,7 +157,7 @@ async def seed_discover_catalog() -> None:
     card_rows = _build_card_rows()
 
     logger.info(
-        "Seeding discover catalog | assets={} cards={}",
+        "Seeding discover catalog | assets=%s cards=%s",
         len(asset_rows),
         len(card_rows),
     )

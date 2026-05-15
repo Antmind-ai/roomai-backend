@@ -141,6 +141,11 @@ docker compose exec app python seed.py
 
 `seed.py` fully reseeds discover catalog tables: it removes existing discover rows and inserts the latest seed data.
 
+## Seedream Manifest Batch Generation
+
+See [README-seedream-manifest.md](README-seedream-manifest.md) for full setup,
+usage, output layout, and troubleshooting notes.
+
 ## API Endpoints
 
 - `GET /` service metadata

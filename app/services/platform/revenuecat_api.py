@@ -1,5 +1,5 @@
+from datetime import UTC, datetime
 import logging
-from datetime import UTC, datetime, timezone
 from typing import Any
 
 import httpx
@@ -68,7 +68,10 @@ async def cancel_subscription(
     app_user_id: str,
     product_identifier: str,
 ) -> dict[str, Any]:
-    url = f"{REVENUECAT_API_BASE}/v1/subscribers/{app_user_id}/subscriptions/{product_identifier}/cancel"
+    url = (
+        f"{REVENUECAT_API_BASE}/v1/subscribers/{app_user_id}/subscriptions/"
+        f"{product_identifier}/cancel"
+    )
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(url, headers=_build_headers())
         if response.status_code == 404:
@@ -82,6 +85,6 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return dt.astimezone(timezone.utc)
+        return dt.astimezone(UTC)
     except (ValueError, TypeError):
         return None

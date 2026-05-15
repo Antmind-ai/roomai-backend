@@ -3,15 +3,15 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loguru import logger
-
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import InvalidTokenError, create_access_token, decode_access_token
+from app.services.platform import revenuecat_api, revenuecat_service
 from app.services.platform.models import CreditLedgerEvent, DeviceUser
 from app.services.platform.schemas.auth import (
     AuthMeResponse,
@@ -20,7 +20,6 @@ from app.services.platform.schemas.auth import (
     DeviceLoginResponse,
     MarkOnboardingCompletedResponse,
 )
-from app.services.platform import revenuecat_api, revenuecat_service
 
 router = APIRouter(prefix="/auth")
 

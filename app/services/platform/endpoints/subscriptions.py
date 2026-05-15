@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.services.platform import revenuecat_api, revenuecat_service
 from app.services.platform.credit_service import add_credits, get_credit_balance
 from app.services.platform.endpoints.auth import get_current_user_id
 from app.services.platform.schemas.subscription import (
@@ -14,7 +15,6 @@ from app.services.platform.schemas.subscription import (
     SubscriptionProductResponse,
     SubscriptionProductsResponse,
 )
-from app.services.platform import revenuecat_api, revenuecat_service
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +53,11 @@ async def subscription_me(
 ) -> SubscriptionMeResponse:
     try:
         balance = await get_credit_balance(db, current_user_id)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
-        )
+        ) from exc
 
     latest_purchase = await revenuecat_service.get_current_subscription_record(
         db,
@@ -115,11 +115,11 @@ async def restore_purchase(
 
     try:
         balance = await get_credit_balance(db, current_user_id)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
-        )
+        ) from exc
 
     try:
         subscriber_data = await revenuecat_api.fetch_subscriber(str(current_user_id))
@@ -128,7 +128,7 @@ async def restore_purchase(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to sync with RevenueCat",
-        )
+        ) from exc
 
     subscriber = subscriber_data.get("subscriber", {})
     if not subscriber:
@@ -176,7 +176,7 @@ async def restore_purchase(
         else 0
     )
 
-    event_id = f"restore:{str(current_user_id)}:{product_id}"
+    event_id = f"restore:{current_user_id!s}:{product_id}"
     is_duplicate = await revenuecat_service.is_duplicate_event(db, event_id)
 
     credits_granted = 0

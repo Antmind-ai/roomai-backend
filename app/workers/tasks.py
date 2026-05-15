@@ -155,8 +155,8 @@ async def process_design_request_task(
                         credits=model_cost - 25,
                     )
                     logger.info(
-                        "Additional credits charged for fallback model | request_id={} | model={} | "
-                        "extra_credits={}",
+                        "Additional credits charged for fallback model | "
+                        "request_id={} | model={} | extra_credits={}",
                         request_id,
                         result_obj.model,
                         model_cost - 25,
@@ -166,11 +166,11 @@ async def process_design_request_task(
                         "Fallback model required additional credits, "
                         f"but only {exc.balance} credits were available."
                     ) from exc
-                except Exception as exc:
+                except Exception:
                     raise DesignGenerationError(
                         "Could not charge additional credits required for "
                         f"fallback model {result_obj.model}."
-                    )
+                    ) from None
 
             design_request.status = "completed"
             design_request.completed_at = datetime.now(UTC)

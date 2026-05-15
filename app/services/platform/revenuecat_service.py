@@ -1,8 +1,8 @@
+from datetime import datetime
 import json
 import logging
 import secrets
 import uuid
-from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession

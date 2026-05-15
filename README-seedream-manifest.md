@@ -33,6 +33,9 @@ python3 generate_seedream_manifest.py \
 - Writes files into per-ratio folders under the output root.
 - Uses `<asset_id>.png` as filename.
 - Writes a run log to JSONL with generation status.
+- For `seedream_v4_5`, requested `4:5` rows are generated as `3:4`, the nearest
+  supported portrait ratio, while still being written under the requested `4x5`
+  folder.
 
 Example output layout:
 
@@ -63,6 +66,7 @@ Each JSONL line includes:
 - `asset_id`
 - `screen_usage`
 - `aspect_ratio`
+- `generation_aspect_ratio`
 - `prompt`
 - `out`
 - `status` (`success`, `failed`, or `skipped`)

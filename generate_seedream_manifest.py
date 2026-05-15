@@ -2,24 +2,32 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 import json
 import logging
+from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-
 
 DEFAULT_MODEL = "seedream_v4_5"
 DEFAULT_TIMEOUT_SECONDS = 1200
 DEFAULT_RETRIES = 2
 DEFAULT_RETRY_BASE_DELAY_SECONDS = 2.0
 REQUIRED_COLUMNS = ("asset_id", "screen_usage", "aspect_ratio", "prompt")
+MODEL_ALLOWED_ASPECT_RATIOS = {
+    "seedream_v4_5": {"1:1", "4:3", "16:9", "3:2", "21:9", "3:4", "9:16", "2:3"},
+}
+MODEL_ASPECT_RATIO_FALLBACKS = {
+    "seedream_v4_5": {
+        "4:5": "3:4",
+    },
+}
 
 LOGGER = logging.getLogger("seedream_manifest")
 
@@ -232,6 +240,22 @@ def _aspect_ratio_folder_name(aspect_ratio: str) -> str:
     return aspect_ratio.replace(":", "x").replace("/", "x").replace(" ", "")
 
 
+def _generation_aspect_ratio(*, model: str, requested_aspect_ratio: str) -> str:
+    allowed_ratios = MODEL_ALLOWED_ASPECT_RATIOS.get(model)
+    if allowed_ratios is None or requested_aspect_ratio in allowed_ratios:
+        return requested_aspect_ratio
+
+    fallback_ratio = MODEL_ASPECT_RATIO_FALLBACKS.get(model, {}).get(requested_aspect_ratio)
+    if fallback_ratio and fallback_ratio in allowed_ratios:
+        return fallback_ratio
+
+    allowed = ", ".join(sorted(allowed_ratios))
+    raise ValueError(
+        f"Model {model} does not support aspect_ratio={requested_aspect_ratio}. "
+        f"Allowed values: {allowed}"
+    )
+
+
 def _extract_url_from_job(job: dict[str, Any]) -> str | None:
     result_url = job.get("result_url")
     if isinstance(result_url, str) and result_url:
@@ -326,9 +350,13 @@ def _download_to_path(url: str, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
 
-    request = Request(url, headers={"User-Agent": "seedream-manifest-generator/1.0"})
+    parsed_url = urlparse(url)
+    if parsed_url.scheme not in {"http", "https"}:
+        raise RuntimeError(f"Unsupported result URL scheme: {parsed_url.scheme or '<empty>'}")
+
+    request = Request(url, headers={"User-Agent": "seedream-manifest-generator/1.0"})  # noqa: S310
     try:
-        with urlopen(request, timeout=120) as response:
+        with urlopen(request, timeout=120) as response:  # noqa: S310
             payload = response.read()
     except URLError as exc:
         raise RuntimeError(f"Failed downloading result URL: {url}") from exc
@@ -345,6 +373,7 @@ def _attempt_job(
     *,
     row: ManifestRow,
     output_path: Path,
+    generation_aspect_ratio: str,
     higgsfield_bin: str,
     model: str,
     timeout_seconds: int,
@@ -367,7 +396,7 @@ def _attempt_job(
                 higgsfield_bin=higgsfield_bin,
                 model=model,
                 prompt=row.prompt,
-                aspect_ratio=row.aspect_ratio,
+                aspect_ratio=generation_aspect_ratio,
                 timeout_seconds=timeout_seconds,
             )
             _download_to_path(result_url, output_path)
@@ -377,7 +406,7 @@ def _attempt_job(
                 result_url=result_url,
                 error=None,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if attempt >= attempts:
                 return JobOutcome(
                     status="failed",
@@ -441,18 +470,33 @@ def _run(args: argparse.Namespace) -> int:
         for index, row in enumerate(rows, start=1):
             ratio_folder = _aspect_ratio_folder_name(row.aspect_ratio)
             output_path = output_dir / ratio_folder / f"{row.asset_id}.png"
-
-            LOGGER.info(
-                "Processing %s/%s | asset_id=%s ratio=%s",
-                index,
-                len(rows),
-                row.asset_id,
-                row.aspect_ratio,
+            generation_aspect_ratio = _generation_aspect_ratio(
+                model=args.model,
+                requested_aspect_ratio=row.aspect_ratio,
             )
+
+            if generation_aspect_ratio == row.aspect_ratio:
+                LOGGER.info(
+                    "Processing %s/%s | asset_id=%s ratio=%s",
+                    index,
+                    len(rows),
+                    row.asset_id,
+                    row.aspect_ratio,
+                )
+            else:
+                LOGGER.info(
+                    "Processing %s/%s | asset_id=%s ratio=%s generation_ratio=%s",
+                    index,
+                    len(rows),
+                    row.asset_id,
+                    row.aspect_ratio,
+                    generation_aspect_ratio,
+                )
 
             outcome = _attempt_job(
                 row=row,
                 output_path=output_path,
+                generation_aspect_ratio=generation_aspect_ratio,
                 higgsfield_bin=args.higgsfield_bin,
                 model=args.model,
                 timeout_seconds=args.timeout_seconds,
@@ -475,6 +519,7 @@ def _run(args: argparse.Namespace) -> int:
                 "asset_id": row.asset_id,
                 "screen_usage": row.screen_usage,
                 "aspect_ratio": row.aspect_ratio,
+                "generation_aspect_ratio": generation_aspect_ratio,
                 "prompt": row.prompt,
                 "out": _relative_output(output_dir, outcome.output_path),
                 "status": outcome.status,
@@ -511,7 +556,7 @@ def main() -> int:
     except KeyboardInterrupt:
         LOGGER.error("Interrupted by user")
         return 130
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         LOGGER.error("Batch generation failed: %s", str(exc))
         return 2
 

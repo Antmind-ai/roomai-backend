@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 import httpx
@@ -34,11 +34,16 @@ def extract_active_entitlements(
     subscriber: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     entitlements = subscriber.get("entitlements", {})
-    return {
-        name: info
-        for name, info in entitlements.items()
-        if info.get("expires_date") is not None
-    }
+    now = datetime.now(UTC)
+
+    active: dict[str, dict[str, Any]] = {}
+    for name, info in entitlements.items():
+        expires_at = parse_iso_datetime(info.get("expires_date"))
+        if expires_at is None or expires_at <= now:
+            continue
+        active[name] = info
+
+    return active
 
 
 def extract_latest_purchase(

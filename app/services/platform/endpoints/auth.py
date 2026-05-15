@@ -13,7 +13,6 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import InvalidTokenError, create_access_token, decode_access_token
 from app.services.platform.models import CreditLedgerEvent, DeviceUser
-from app.services.platform.models.subscription import PurchaseRecord
 from app.services.platform.schemas.auth import (
     AuthMeResponse,
     DeleteAccountResponse,
@@ -21,7 +20,7 @@ from app.services.platform.schemas.auth import (
     DeviceLoginResponse,
     MarkOnboardingCompletedResponse,
 )
-from app.services.platform import revenuecat_api
+from app.services.platform import revenuecat_api, revenuecat_service
 
 router = APIRouter(prefix="/auth")
 
@@ -106,24 +105,10 @@ async def device_login(
 
             if user.deleted_at is not None:
                 user.deleted_at = None
-                user.credit_balance = initial_credits
                 user.onboarding_completed = False
                 user.last_seen_at = now
 
                 db.add(user)
-
-                if initial_credits > 0:
-                    await db.flush()
-                    db.add(
-                        CreditLedgerEvent(
-                            user_id=user.id,
-                            delta=initial_credits,
-                            balance_after=initial_credits,
-                            source="signup_grant",
-                            reason="Initial free lifetime credits (reactivated account)",
-                        )
-                    )
-                    await db.flush()
 
                 await db.commit()
                 await db.refresh(user)
@@ -222,14 +207,10 @@ async def delete_account(
             detail="User not found or already deleted",
         )
 
-    subscription_result = await db.execute(
-        select(PurchaseRecord)
-        .where(PurchaseRecord.user_id == current_user_id)
-        .where(PurchaseRecord.is_active_subscription.is_(True))
-        .order_by(PurchaseRecord.created_at.desc())
-        .limit(1)
+    active_subscription = await revenuecat_service.get_current_subscription_record(
+        db,
+        user_id=current_user_id,
     )
-    active_subscription = subscription_result.scalar_one_or_none()
 
     if active_subscription and settings.revenuecat_api_key:
         try:

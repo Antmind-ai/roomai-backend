@@ -4,7 +4,7 @@ import secrets
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -87,6 +87,8 @@ async def record_purchase_event(
     expires_at: datetime | None,
     raw_payload: dict,
 ) -> PurchaseRecord:
+    await clear_active_subscription_records(db, user_id=user_id)
+
     record = PurchaseRecord(
         user_id=user_id,
         revenuecat_event_id=event_id,
@@ -102,4 +104,34 @@ async def record_purchase_event(
     )
     db.add(record)
     await db.flush()
+    return record
+
+
+async def clear_active_subscription_records(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+) -> None:
+    await db.execute(
+        update(PurchaseRecord)
+        .where(PurchaseRecord.user_id == user_id)
+        .where(PurchaseRecord.is_active_subscription.is_(True))
+        .values(is_active_subscription=False)
+    )
+
+
+async def get_current_subscription_record(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+) -> PurchaseRecord | None:
+    result = await db.execute(
+        select(PurchaseRecord)
+        .where(PurchaseRecord.user_id == user_id)
+        .order_by(PurchaseRecord.created_at.desc())
+        .limit(1)
+    )
+    record = result.scalar_one_or_none()
+    if record is None or not record.is_active_subscription:
+        return None
     return record

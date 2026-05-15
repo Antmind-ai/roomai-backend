@@ -2,15 +2,12 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import func
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.services.platform.credit_service import add_credits, get_credit_balance
 from app.services.platform.endpoints.auth import get_current_user_id
-from app.services.platform.models.subscription import PurchaseRecord
 from app.services.platform.schemas.subscription import (
     RestoreResponse,
     SubscriptionMeResponse,
@@ -62,14 +59,10 @@ async def subscription_me(
             detail="User not found",
         )
 
-    result = await db.execute(
-        select(PurchaseRecord)
-        .where(PurchaseRecord.user_id == current_user_id)
-        .where(PurchaseRecord.is_active_subscription.is_(True))
-        .order_by(PurchaseRecord.created_at.desc())
-        .limit(1)
+    latest_purchase = await revenuecat_service.get_current_subscription_record(
+        db,
+        user_id=current_user_id,
     )
-    latest_purchase = result.scalar_one_or_none()
 
     if latest_purchase is None:
         return SubscriptionMeResponse(
@@ -90,6 +83,8 @@ async def subscription_me(
         settings.subscription_weekly_credits
         if plan_type == "weekly"
         else settings.subscription_yearly_credits
+        if plan_type == "yearly"
+        else 0
     )
 
     return SubscriptionMeResponse(

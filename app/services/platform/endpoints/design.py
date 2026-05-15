@@ -39,6 +39,34 @@ ALLOWED_CONTENT_TYPES: dict[str, str] = {
 }
 
 
+def _validate_r2_upload_ownership(
+    *,
+    current_user_id: uuid.UUID,
+    input_upload_id: uuid.UUID,
+    input_r2_key: str | None,
+) -> str:
+    if not input_r2_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="input_r2_key is required for uploaded source",
+        )
+
+    expected_prefix = f"{current_user_id}/{input_upload_id}"
+    if not input_r2_key.startswith(expected_prefix):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Uploaded design input does not belong to the current user",
+        )
+
+    if not object_exists(input_r2_key):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Uploaded design input not found in storage",
+        )
+
+    return input_r2_key
+
+
 def _resolve_upload_suffix(upload_file: UploadFile) -> str:
     filename_suffix = Path(upload_file.filename or "").suffix.lower()
     if filename_suffix:
@@ -311,6 +339,7 @@ async def submit_design_request(
     db: AsyncSession = Depends(get_db),
 ) -> CreateDesignResponse:
     input_filename: str | None = None
+    input_r2_key: str | None = None
 
     if payload.source == DesignSource.UPLOAD:
         if payload.input_upload_id is None:
@@ -320,16 +349,11 @@ async def submit_design_request(
             )
 
         if settings.r2_endpoint_url:
-            if not payload.input_r2_key:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="input_r2_key is required for uploaded source",
-                )
-            if not object_exists(payload.input_r2_key):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Uploaded design input not found in storage",
-                )
+            input_r2_key = _validate_r2_upload_ownership(
+                current_user_id=current_user_id,
+                input_upload_id=payload.input_upload_id,
+                input_r2_key=payload.input_r2_key,
+            )
         else:
             user_upload_dir = Path(settings.design_upload_dir) / str(current_user_id)
             matches = list(user_upload_dir.glob(f"{payload.input_upload_id}.*"))
@@ -344,7 +368,7 @@ async def submit_design_request(
         user_id=current_user_id,
         source=payload.source.value,
         input_upload_id=payload.input_upload_id,
-        input_r2_key=payload.input_r2_key if settings.r2_endpoint_url else None,
+        input_r2_key=input_r2_key if settings.r2_endpoint_url else None,
         input_filename=input_filename,
         example_photo_id=payload.example_photo_id,
         building_type=payload.building_type,

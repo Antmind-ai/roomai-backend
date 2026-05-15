@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.database import get_db_context
 from app.services.design_generation import DesignGenerationError, generate_image
 from app.services.design_generation.service import get_model_credit_cost
-from app.services.platform.credit_service import consume_credit
+from app.services.platform.credit_service import InsufficientCreditsError, consume_credit
 from app.services.platform.models import DesignRequest, DeviceUser
 from app.services.r2 import (
     delete_object_async,
@@ -161,13 +161,15 @@ async def process_design_request_task(
                         result_obj.model,
                         model_cost - 25,
                     )
+                except InsufficientCreditsError as exc:
+                    raise DesignGenerationError(
+                        "Fallback model required additional credits, "
+                        f"but only {exc.balance} credits were available."
+                    ) from exc
                 except Exception as exc:
-                    logger.warning(
-                        "Failed to charge additional credits for fallback model | request_id={} | "
-                        "model={} | error={}",
-                        request_id,
-                        result_obj.model,
-                        exc,
+                    raise DesignGenerationError(
+                        "Could not charge additional credits required for "
+                        f"fallback model {result_obj.model}."
                     )
 
             design_request.status = "completed"

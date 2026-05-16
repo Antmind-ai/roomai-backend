@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 import mimetypes
 from pathlib import Path
+import shutil
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -37,6 +38,7 @@ ALLOWED_CONTENT_TYPES: dict[str, str] = {
     "image/webp": ".webp",
     "image/heic": ".heic",
 }
+DISCOVER_SAMPLE_ASSETS_DIR = Path("/app/discover-sample-assets")
 
 
 def _validate_r2_upload_ownership(
@@ -67,21 +69,35 @@ def _validate_r2_upload_ownership(
     return input_r2_key
 
 
-async def _resolve_example_input_r2_key(
+def _copy_example_sample_to_user_upload_dir(
+    *,
+    current_user_id: uuid.UUID,
+    example_r2_key: str,
+) -> str | None:
+    source_filename = Path(example_r2_key).name
+    source_path = DISCOVER_SAMPLE_ASSETS_DIR / source_filename
+    if not source_path.exists():
+        return None
+
+    user_upload_dir = Path(settings.design_upload_dir) / str(current_user_id)
+    user_upload_dir.mkdir(parents=True, exist_ok=True)
+
+    target_filename = f"example-{uuid.uuid4()}-{source_filename}"
+    target_path = user_upload_dir / target_filename
+    shutil.copyfile(source_path, target_path)
+    return target_filename
+
+
+async def _resolve_example_input_refs(
     *,
     db: AsyncSession,
+    current_user_id: uuid.UUID,
     example_photo_id: str | None,
-) -> str:
+) -> tuple[str | None, str | None]:
     if not example_photo_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="example_photo_id is required for example source",
-        )
-
-    if not settings.r2_endpoint_url or not settings.r2_bucket_name:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Object storage is not configured",
         )
 
     result = await db.execute(
@@ -102,13 +118,33 @@ async def _resolve_example_input_r2_key(
             detail="Example photo not found",
         )
 
-    if not object_exists(resolved_r2_key):
+    if settings.r2_endpoint_url and settings.r2_bucket_name and object_exists(resolved_r2_key):
+        return resolved_r2_key, None
+
+    try:
+        local_filename = _copy_example_sample_to_user_upload_dir(
+            current_user_id=current_user_id,
+            example_r2_key=resolved_r2_key,
+        )
+    except OSError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Example photo asset not found in storage",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not prepare local example photo sample",
+        ) from exc
+
+    if local_filename:
+        return None, local_filename
+
+    if not settings.r2_endpoint_url or not settings.r2_bucket_name:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage is not configured and local sample assets are unavailable",
         )
 
-    return resolved_r2_key
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Example photo asset not found in storage",
+    )
 
 
 def _resolve_upload_suffix(upload_file: UploadFile) -> str:
@@ -408,8 +444,9 @@ async def submit_design_request(
                 )
             input_filename = matches[0].name
     else:
-        input_r2_key = await _resolve_example_input_r2_key(
+        input_r2_key, input_filename = await _resolve_example_input_refs(
             db=db,
+            current_user_id=current_user_id,
             example_photo_id=payload.example_photo_id,
         )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 import uuid
 
 from fastapi import HTTPException
@@ -61,29 +62,33 @@ class _FakeSubmitDB:
 
 
 @pytest.mark.asyncio
-async def test_resolve_example_input_r2_key_returns_key_for_known_card(monkeypatch):
+async def test_resolve_example_input_refs_returns_r2_key_for_known_card(monkeypatch):
     expected_key = "assets/3-4/discover-kitchen.webp"
     db = _FakeLookupDB(expected_key)
 
     monkeypatch.setattr(design.settings, "r2_endpoint_url", "https://r2.example.com")
     monkeypatch.setattr(design.settings, "r2_bucket_name", "roomai")
     monkeypatch.setattr(design, "object_exists", lambda key: key == expected_key)
+    monkeypatch.setattr(design, "DISCOVER_SAMPLE_ASSETS_DIR", Path("/tmp/non-existent"))
 
-    resolved = await design._resolve_example_input_r2_key(
+    resolved_r2_key, local_filename = await design._resolve_example_input_refs(
         db=db,
+        current_user_id=uuid.uuid4(),
         example_photo_id="kitchen-1",
     )
 
-    assert resolved == expected_key
+    assert resolved_r2_key == expected_key
+    assert local_filename is None
     assert db.execute_count == 1
 
 
 @pytest.mark.asyncio
-async def test_resolve_example_input_r2_key_rejects_unknown_card(monkeypatch):
+async def test_resolve_example_input_refs_rejects_unknown_card(monkeypatch):
     db = _FakeLookupDB(None)
 
     monkeypatch.setattr(design.settings, "r2_endpoint_url", "https://r2.example.com")
     monkeypatch.setattr(design.settings, "r2_bucket_name", "roomai")
+    monkeypatch.setattr(design, "DISCOVER_SAMPLE_ASSETS_DIR", Path("/tmp/non-existent"))
 
     def _unexpected_object_exists(_key: str) -> bool:
         raise AssertionError("object_exists should not run when card lookup misses")
@@ -91,8 +96,9 @@ async def test_resolve_example_input_r2_key_rejects_unknown_card(monkeypatch):
     monkeypatch.setattr(design, "object_exists", _unexpected_object_exists)
 
     with pytest.raises(HTTPException) as exc_info:
-        await design._resolve_example_input_r2_key(
+        await design._resolve_example_input_refs(
             db=db,
+            current_user_id=uuid.uuid4(),
             example_photo_id="unknown-card",
         )
 
@@ -102,34 +108,40 @@ async def test_resolve_example_input_r2_key_rejects_unknown_card(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_example_input_r2_key_requires_object_storage_config(monkeypatch):
+async def test_resolve_example_input_refs_requires_storage_or_local_sample(monkeypatch):
     db = _FakeLookupDB("assets/3-4/discover-kitchen.webp")
 
     monkeypatch.setattr(design.settings, "r2_endpoint_url", None)
     monkeypatch.setattr(design.settings, "r2_bucket_name", "roomai")
+    monkeypatch.setattr(design, "DISCOVER_SAMPLE_ASSETS_DIR", Path("/tmp/non-existent"))
 
     with pytest.raises(HTTPException) as exc_info:
-        await design._resolve_example_input_r2_key(
+        await design._resolve_example_input_refs(
             db=db,
+            current_user_id=uuid.uuid4(),
             example_photo_id="kitchen-1",
         )
 
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Object storage is not configured"
-    assert db.execute_count == 0
+    assert exc_info.value.detail == "Object storage is not configured and local sample assets are unavailable"
+    assert db.execute_count == 1
 
 
 @pytest.mark.asyncio
-async def test_resolve_example_input_r2_key_rejects_missing_asset_object(monkeypatch):
+async def test_resolve_example_input_refs_rejects_missing_asset_object_when_local_unavailable(
+    monkeypatch,
+):
     db = _FakeLookupDB("assets/3-4/discover-kitchen.webp")
 
     monkeypatch.setattr(design.settings, "r2_endpoint_url", "https://r2.example.com")
     monkeypatch.setattr(design.settings, "r2_bucket_name", "roomai")
     monkeypatch.setattr(design, "object_exists", lambda _key: False)
+    monkeypatch.setattr(design, "DISCOVER_SAMPLE_ASSETS_DIR", Path("/tmp/non-existent"))
 
     with pytest.raises(HTTPException) as exc_info:
-        await design._resolve_example_input_r2_key(
+        await design._resolve_example_input_refs(
             db=db,
+            current_user_id=uuid.uuid4(),
             example_photo_id="kitchen-1",
         )
 
@@ -138,15 +150,49 @@ async def test_resolve_example_input_r2_key_rejects_missing_asset_object(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_resolve_example_input_refs_uses_local_sample_fallback_when_asset_missing(
+    monkeypatch,
+    tmp_path,
+):
+    db = _FakeLookupDB("assets/3-4/discover-kitchen.webp")
+    current_user_id = uuid.uuid4()
+
+    sample_dir = tmp_path / "discover-samples"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    sample_file = sample_dir / "discover-kitchen.webp"
+    sample_file.write_bytes(b"sample")
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(design.settings, "design_upload_dir", str(upload_dir))
+    monkeypatch.setattr(design.settings, "r2_endpoint_url", "https://r2.example.com")
+    monkeypatch.setattr(design.settings, "r2_bucket_name", "roomai")
+    monkeypatch.setattr(design, "object_exists", lambda _key: False)
+    monkeypatch.setattr(design, "DISCOVER_SAMPLE_ASSETS_DIR", sample_dir)
+
+    resolved_r2_key, local_filename = await design._resolve_example_input_refs(
+        db=db,
+        current_user_id=current_user_id,
+        example_photo_id="kitchen-1",
+    )
+
+    assert resolved_r2_key is None
+    assert local_filename is not None
+    copied_file = upload_dir / str(current_user_id) / local_filename
+    assert copied_file.exists()
+    assert copied_file.read_bytes() == b"sample"
+
+
+@pytest.mark.asyncio
 async def test_submit_design_request_example_uses_server_resolved_r2_key(monkeypatch):
     current_user_id = uuid.uuid4()
     expected_key = "assets/3-4/discover-kitchen.webp"
     db = _FakeSubmitDB()
 
-    async def _fake_resolve_example_input_r2_key(*, db, example_photo_id):
+    async def _fake_resolve_example_input_refs(*, db, current_user_id, example_photo_id):
         assert example_photo_id == "kitchen-1"
         assert db is not None
-        return expected_key
+        assert current_user_id is not None
+        return expected_key, None
 
     async def _fake_consume_credit(*args, **kwargs):
         assert kwargs["source"] == "design_request"
@@ -159,8 +205,8 @@ async def test_submit_design_request_example_uses_server_resolved_r2_key(monkeyp
 
     monkeypatch.setattr(
         design,
-        "_resolve_example_input_r2_key",
-        _fake_resolve_example_input_r2_key,
+        "_resolve_example_input_refs",
+        _fake_resolve_example_input_refs,
     )
     monkeypatch.setattr(design, "consume_credit", _fake_consume_credit)
     monkeypatch.setattr(design, "enqueue_job", _fake_enqueue_job)

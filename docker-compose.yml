@@ -161,6 +161,7 @@ services:
       - ./logs:/app/logs
       - ${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}:${DESIGN_UPLOAD_DIR:-/tmp/titan/design-inputs}
       - ${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}:${DESIGN_OUTPUT_DIR:-/tmp/titan/design-outputs}
+      - ${DISCOVER_SAMPLE_ASSETS_DIR:-../mobile-ui/assets/bundled/gpt-image-2}:/app/discover-sample-assets:ro
       - higgsfield_config:/app/.config
     ports:
       - "${APP_HOST_BIND:-0.0.0.0}:${APP_PORT:-8000}:8000"

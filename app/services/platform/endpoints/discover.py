@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from urllib.parse import quote
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,15 +18,23 @@ from app.services.platform.schemas.discover import (
     DiscoverCategoryResponse,
     DiscoverSectionResponse,
 )
-from app.services.r2 import generate_presigned_url
 
 router = APIRouter(prefix="/discover")
+
+DISCOVER_CATALOG_CACHE_MAX_AGE_SECONDS = 86400
+
+
+def _build_public_r2_url(r2_key: str) -> str:
+    base_url = (settings.r2_public_url or "").rstrip("/")
+    normalized_key = r2_key.strip("/")
+    encoded_key = "/".join(quote(part, safe="") for part in normalized_key.split("/"))
+    return f"{base_url}/{encoded_key}"
 
 
 @router.get(
     "/catalog",
     response_model=DiscoverCatalogResponse,
-    summary="Return signed discover catalog",
+    summary="Return public discover catalog",
 )
 async def get_discover_catalog(
     current_user_id: uuid.UUID = Depends(get_current_user_id),
@@ -33,10 +42,10 @@ async def get_discover_catalog(
 ) -> DiscoverCatalogResponse:
     del current_user_id
 
-    if not settings.r2_bucket_name:
+    if not settings.r2_public_url:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Object storage is not configured",
+            detail="Public object storage URL is not configured",
         )
 
     result = await db.execute(
@@ -58,7 +67,7 @@ async def get_discover_catalog(
             detail="Discover catalog is not seeded",
         )
 
-    signed_url_by_asset_id: dict[str, str] = {}
+    image_url_by_asset_id: dict[str, str] = {}
     category_payloads: dict[str, DiscoverCategoryResponse] = {}
     section_payloads: dict[tuple[str, str], DiscoverSectionResponse] = {}
 
@@ -98,13 +107,13 @@ async def get_discover_catalog(
                 ),
             )
 
-        if asset.asset_id not in signed_url_by_asset_id:
-            signed_url_by_asset_id[asset.asset_id] = generate_presigned_url(asset.r2_key)
+        if asset.asset_id not in image_url_by_asset_id:
+            image_url_by_asset_id[asset.asset_id] = _build_public_r2_url(asset.r2_key)
 
         section_payload.cards.append(
             DiscoverCardResponse(
                 id=card.card_id,
-                image_url=signed_url_by_asset_id[asset.asset_id],
+                image_url=image_url_by_asset_id[asset.asset_id],
             )
         )
 
@@ -122,7 +131,8 @@ async def get_discover_catalog(
         )
 
     return DiscoverCatalogResponse(
-        expires_in_seconds=settings.r2_presigned_url_expiry,
+        cache_max_age_seconds=DISCOVER_CATALOG_CACHE_MAX_AGE_SECONDS,
+        expires_in_seconds=DISCOVER_CATALOG_CACHE_MAX_AGE_SECONDS,
         categories=DiscoverCatalogCategoriesResponse(
             home=category_payloads["home"],
             garden=category_payloads["garden"],

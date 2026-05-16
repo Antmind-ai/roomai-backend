@@ -24,5 +24,6 @@ class DiscoverCatalogCategoriesResponse(BaseModel):
 
 
 class DiscoverCatalogResponse(BaseModel):
+    cache_max_age_seconds: int = Field(..., ge=1)
     expires_in_seconds: int = Field(..., ge=1)
     categories: DiscoverCatalogCategoriesResponse

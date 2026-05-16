@@ -68,7 +68,11 @@ async def _resolve_input_image_path(design_request: DesignRequest) -> tuple[Path
 
         return image_path, is_temp
 
-    raise DesignGenerationError("No input image filename or R2 key on design request")
+    raise DesignGenerationError(
+        "No input image filename or R2 key on design request"
+        f" | source={design_request.source}"
+        f" | example_photo_id={design_request.example_photo_id}"
+    )
 
 
 def _cleanup_temp_file(file_path: Path) -> None:

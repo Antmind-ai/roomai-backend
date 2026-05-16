@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.services.platform.credit_service import InsufficientCreditsError, consume_credit
 from app.services.platform.endpoints.auth import get_current_user_id
-from app.services.platform.models import DesignRequest
+from app.services.platform.models import DesignRequest, DiscoverAsset, DiscoverCard
 from app.services.platform.schemas.design import (
     CreateDesignRequest,
     CreateDesignResponse,
@@ -65,6 +65,50 @@ def _validate_r2_upload_ownership(
         )
 
     return input_r2_key
+
+
+async def _resolve_example_input_r2_key(
+    *,
+    db: AsyncSession,
+    example_photo_id: str | None,
+) -> str:
+    if not example_photo_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="example_photo_id is required for example source",
+        )
+
+    if not settings.r2_endpoint_url or not settings.r2_bucket_name:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage is not configured",
+        )
+
+    result = await db.execute(
+        select(DiscoverAsset.r2_key)
+        .select_from(DiscoverCard)
+        .join(
+            DiscoverAsset,
+            DiscoverAsset.asset_id == DiscoverCard.image_asset_id,
+        )
+        .where(DiscoverCard.card_id == example_photo_id)
+        .limit(1)
+    )
+    resolved_r2_key = result.scalar_one_or_none()
+
+    if resolved_r2_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Example photo not found",
+        )
+
+    if not object_exists(resolved_r2_key):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Example photo asset not found in storage",
+        )
+
+    return resolved_r2_key
 
 
 def _resolve_upload_suffix(upload_file: UploadFile) -> str:
@@ -363,12 +407,17 @@ async def submit_design_request(
                     detail="Uploaded design input not found",
                 )
             input_filename = matches[0].name
+    else:
+        input_r2_key = await _resolve_example_input_r2_key(
+            db=db,
+            example_photo_id=payload.example_photo_id,
+        )
 
     design_request = DesignRequest(
         user_id=current_user_id,
         source=payload.source.value,
         input_upload_id=payload.input_upload_id,
-        input_r2_key=input_r2_key if settings.r2_endpoint_url else None,
+        input_r2_key=input_r2_key,
         input_filename=input_filename,
         example_photo_id=payload.example_photo_id,
         building_type=payload.building_type,

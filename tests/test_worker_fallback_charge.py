@@ -88,3 +88,20 @@ async def test_process_design_request_task_fails_when_fallback_charge_cannot_be_
     assert design_request.completed_at is None
     assert design_request.failed_at is not None
     assert "additional credits" in design_request.error_message.lower()
+
+
+@pytest.mark.asyncio
+async def test_resolve_input_image_path_missing_inputs_includes_source_context():
+    design_request = SimpleNamespace(
+        source="example",
+        example_photo_id="kitchen-1",
+        input_r2_key=None,
+        input_filename=None,
+    )
+
+    with pytest.raises(tasks.DesignGenerationError) as exc_info:
+        await tasks._resolve_input_image_path(design_request)
+
+    message = str(exc_info.value)
+    assert "source=example" in message
+    assert "example_photo_id=kitchen-1" in message

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import get_db
 from app.services.object_replace import fal_service, storage
 from app.services.object_replace.schemas import (
     CreateObjectReplaceUploadRequest,
@@ -13,6 +17,7 @@ from app.services.object_replace.schemas import (
     SUPPORTED_IMAGE_CONTENT_TYPES,
 )
 from app.services.platform.endpoints.auth import get_current_user_id
+from app.services.platform.models import DesignRequest
 
 router = APIRouter(prefix="/object-replace", tags=["Object Replace"])
 
@@ -64,7 +69,11 @@ async def replace_object_from_upload(
     point_y: int = Form(...),
     image_width: int | None = Form(default=None),
     image_height: int | None = Form(default=None),
-    _current_user_id=Depends(get_current_user_id),
+    building_type: str = Form(default="other"),
+    style_id: str = Form(default="modern"),
+    palette_id: str = Form(default="surprise-me"),
+    current_user_id=Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
 ) -> ObjectReplaceResponse:
     content_type = (file.content_type or "").lower()
     if content_type not in SUPPORTED_IMAGE_CONTENT_TYPES:
@@ -151,6 +160,34 @@ async def replace_object_from_upload(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+
+    normalized_building_type = (building_type or "other").strip()[:80] or "other"
+    normalized_style_id = (style_id or "modern").strip()[:80] or "modern"
+    normalized_palette_id = (palette_id or "surprise-me").strip()[:80] or "surprise-me"
+
+    design_request = DesignRequest(
+        user_id=current_user_id,
+        source="upload",
+        building_type=normalized_building_type,
+        style_id=normalized_style_id,
+        palette_id=normalized_palette_id,
+        prompt=normalized_prompt,
+        status="completed",
+        queue_job_id=result["request_id"],
+        output_preview_url=str(result["image_url"]),
+        processing_started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+    )
+
+    db.add(design_request)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object replacement completed, but we could not save it to My Library.",
+        )
 
     return ObjectReplaceResponse(
         image_url=str(result["image_url"]),

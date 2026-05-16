@@ -1,5 +1,5 @@
-import uuid
 from datetime import datetime
+import uuid
 
 import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, Integer, String, func

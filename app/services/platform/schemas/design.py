@@ -1,11 +1,11 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 import uuid
 
 from pydantic import BaseModel, Field, model_validator
 
 
-class DesignSource(str, Enum):
+class DesignSource(StrEnum):
     UPLOAD = "upload"
     EXAMPLE = "example"
 

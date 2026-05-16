@@ -89,4 +89,3 @@ async def test_device_login_reactivation_preserves_existing_balance(monkeypatch)
     assert reactivated_user.last_seen_at >= now_before
     assert db.rollback_count == 1
     assert not any(isinstance(item, CreditLedgerEvent) for item in db.added)
-

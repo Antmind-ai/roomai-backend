@@ -8,7 +8,6 @@ from loguru import logger
 
 from app.core.config import settings
 
-
 GENERATE_TIMEOUT = settings.higgsfield_timeout_minutes * 60
 
 
@@ -41,12 +40,12 @@ async def _run_higgsfield(
             process.communicate(),
             timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError as exc:
         process.kill()
         await process.wait()
         raise HiggsfieldError(
             f"Higgsfield CLI timed out after {timeout}s"
-        )
+        ) from exc
 
     stdout_str = stdout.decode("utf-8", errors="replace").strip()
     stderr_str = stderr.decode("utf-8", errors="replace").strip()
@@ -122,8 +121,10 @@ def _extract_url(job: dict[str, Any]) -> HiggsfieldGenerateResult | None:
 def _parse_result(output: str) -> HiggsfieldGenerateResult:
     try:
         data = json.loads(output)
-    except json.JSONDecodeError:
-        raise HiggsfieldError(f"Failed to parse Higgsfield JSON output: {output[:500]}")
+    except json.JSONDecodeError as exc:
+        raise HiggsfieldError(
+            f"Failed to parse Higgsfield JSON output: {output[:500]}"
+        ) from exc
 
     # Handle single job object
     if isinstance(data, dict):
@@ -148,7 +149,8 @@ def _parse_result(output: str) -> HiggsfieldGenerateResult:
 
         last = data[-1] if isinstance(data[-1], dict) else {}
         raise HiggsfieldError(
-            f"Could not extract media URL from any job | last_keys={list(last.keys())} | status={last.get('status')}"
+            "Could not extract media URL from any job | "
+            f"last_keys={list(last.keys())} | status={last.get('status')}"
         )
 
     raise HiggsfieldError(f"Unexpected Higgsfield response type: {type(data).__name__}")

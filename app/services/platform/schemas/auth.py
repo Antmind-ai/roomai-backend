@@ -1,5 +1,5 @@
-import uuid
 from datetime import datetime
+import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -18,7 +18,7 @@ class DeviceLoginRequest(BaseModel):
 
 class DeviceLoginResponse(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105
     expires_in: int
     user_id: uuid.UUID
 

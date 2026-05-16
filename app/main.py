@@ -25,6 +25,7 @@ from app.core.config import settings
 from app.core.middleware.logging import RequestLoggingMiddleware
 
 # ── Service routers ───────────────────────────────────────────────────────────
+from app.services.object_replace.router import router as object_replace_router
 from app.services.platform.router import router as platform_router
 from app.workers.client import close_arq_pool, init_arq_pool
 
@@ -36,7 +37,7 @@ from app.workers.client import close_arq_pool, init_arq_pool
 def setup_logging():
     # Remove default handler
     logger.remove()
-    
+
     # Add a clean colored one
     logger.add(
         sys.stdout,
@@ -51,7 +52,7 @@ def setup_logging():
         backtrace=True,
         diagnose=False,
         # We disable enqueue for now to rule out async logging issues during boot
-        enqueue=False, 
+        enqueue=False,
     )
 
     # Intercept stdlib logging
@@ -73,12 +74,13 @@ def setup_logging():
 
     # Set up the intercept handler
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-    
+
     # Also intercept uvicorn/gunicorn specifically
     for _name in ("uvicorn", "uvicorn.error", "uvicorn.access", "gunicorn", "gunicorn.error"):
         _logger = logging.getLogger(_name)
         _logger.handlers = [InterceptHandler()]
         _logger.propagate = False
+
 
 setup_logging()
 
@@ -131,6 +133,7 @@ def create_app() -> FastAPI:
 
     # ── Service routers ───────────────────────────────────────────────────────
     app.include_router(platform_router, prefix=settings.api_v1_prefix)
+    app.include_router(object_replace_router, prefix=settings.api_v1_prefix)
     # app.include_router(game_one_router, prefix=f"{settings.api_v1_prefix}/game-one")
     # app.include_router(game_two_router, prefix=f"{settings.api_v1_prefix}/game-two")
 

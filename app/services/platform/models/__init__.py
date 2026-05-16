@@ -7,9 +7,9 @@ from app.services.platform.models.user import DeviceUser
 __all__ = [
     "CreditLedgerEvent",
     "DesignRequest",
+    "DeviceUser",
     "DiscoverAsset",
     "DiscoverCard",
-    "DeviceUser",
     "PurchaseRecord",
     "SubscriptionProduct",
 ]

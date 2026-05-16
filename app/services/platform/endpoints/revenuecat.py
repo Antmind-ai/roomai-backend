@@ -1,5 +1,5 @@
+from datetime import UTC, datetime
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,12 +65,12 @@ async def revenuecat_webhook(
 
         if expiry_raw:
             expires_at = datetime.fromtimestamp(
-                expiry_raw / 1000, tz=timezone.utc
+                expiry_raw / 1000, tz=UTC
             )
 
         if purchase_raw:
             purchased_at = datetime.fromtimestamp(
-                purchase_raw / 1000, tz=timezone.utc
+                purchase_raw / 1000, tz=UTC
             )
 
         if event_type in ("INITIAL_PURCHASE", "RENEWAL", "NON_RENEWING_PURCHASE"):
@@ -87,9 +87,7 @@ async def revenuecat_webhook(
                     idempotency_key=f"rc:{event_id}",
                 )
 
-        elif event_type == "CANCELLATION":
-            is_active = False
-        elif event_type == "EXPIRATION":
+        elif event_type in ("CANCELLATION", "EXPIRATION"):
             is_active = False
 
         await revenuecat_service.record_purchase_event(

@@ -8,6 +8,8 @@ Titan is a high-performance API platform by Antmind Ventures Private Limited.
 - Production Domain: https://titan.antmind.ai
 
 Built with FastAPI, PostgreSQL (pgvector), Redis, ARQ workers, Nginx, Docker, and Alembic.
+Object Replace is served by the FastAPI app at `/api/v1/object-replace` and
+uses Cloudflare R2/S3 presigned uploads plus fal.ai segmentation and inpainting.
 
 ## Start Here (Fast Setup)
 
@@ -211,6 +213,19 @@ usage, output layout, and troubleshooting notes.
 | `WORKERS_COUNT` | No | `0` (auto) |
 | `RUN_MIGRATIONS` | No | `false` |
 | `NGINX_CONF` | No | `titan.conf` |
+| `R2_ENDPOINT_URL` | Object Replace | - |
+| `R2_BUCKET_NAME` | Object Replace | - |
+| `R2_ACCESS_KEY_ID` | Object Replace | - |
+| `R2_SECRET_ACCESS_KEY` | Object Replace | - |
+| `R2_PUBLIC_URL` | No | - |
+| `R2_PRESIGNED_URL_EXPIRY` | No | `3600` |
+| `R2_DOWNLOAD_URL_EXPIRY` | No | `3600` |
+| `R2_REGION` | No | `auto` |
+| `S3_FORCE_PATH_STYLE` | No | `true` |
+| `FAL_KEY` | Object Replace / Design Generation | - |
+| `FAL_SEGMENTATION_MODEL_ID` | No | `fal-ai/fast-sam` |
+| `FAL_FILL_MODEL_ID` | No | `fal-ai/flux-pro/v1/fill` |
+| `FAL_TIMEOUT_MS` | No | `900000` |
 
 ## Architecture at a Glance
 
@@ -219,6 +234,7 @@ Client -> Nginx -> FastAPI app
                    |-> PostgreSQL (pgvector)
                    |-> Redis
                    |-> ARQ queue -> ARQ worker
+                   |-> Object Replace -> R2/S3 + fal.ai fast-sam + flux fill
 ```
 
 ## Extending Titan

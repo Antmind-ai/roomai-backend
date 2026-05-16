@@ -21,17 +21,20 @@ class Settings(BaseSettings):
     secret_key: str = Field(..., min_length=32)
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = Field(default=60 * 24 * 30, ge=1)
-    design_upload_dir: str = "/tmp/titan/design-inputs"
+    design_upload_dir: str = "/tmp/titan/design-inputs"  # noqa: S108
     design_upload_max_mb: int = Field(default=15, ge=1, le=50)
-    design_output_dir: str = "/tmp/titan/design-outputs"
+    design_output_dir: str = "/tmp/titan/design-outputs"  # noqa: S108
     design_generation_provider: Literal["fal", "higgsfield"] = "fal"
     enable_higgsfield_backend: bool = False
     fal_key: str | None = Field(default=None)
     fal_timeout_minutes: int = Field(default=20, ge=1, le=120)
+    fal_timeout_ms: int = Field(default=900000, ge=1000, le=7200000)
     fal_design_model: str = "fal-ai/bytedance/seedream/v4.5/edit"
     fal_design_aspect_ratio: str = "1:1"
     fal_design_resolution: Literal["1K", "2K", "4K"] = "1K"
     fal_design_output_format: Literal["jpeg", "png", "webp"] = "png"
+    fal_segmentation_model_id: str = "fal-ai/fast-sam"
+    fal_fill_model_id: str = "fal-ai/flux-pro/v1/fill"
     higgsfield_timeout_minutes: int = Field(default=20, ge=1, le=120)
     higgsfield_bin: str = "higgsfield"
     higgsfield_design_model: str = "seedream_v4_5"
@@ -52,6 +55,9 @@ class Settings(BaseSettings):
     r2_secret_access_key: str | None = Field(default=None)
     r2_public_url: str | None = Field(default=None)
     r2_presigned_url_expiry: int = Field(default=3600, ge=60, le=86400)
+    r2_download_url_expiry: int = Field(default=3600, ge=60, le=86400)
+    r2_region: str = "auto"
+    s3_force_path_style: bool = True
 
     # ── RevenueCat ─────────────────────────────────────────────────────────────
     revenuecat_api_key: str | None = Field(default=None)
@@ -117,7 +123,9 @@ class Settings(BaseSettings):
     def redis_url(self) -> str:
         if self.redis_password:
             encoded_password = quote(self.redis_password, safe="")
-            return f"redis://:{encoded_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+            return (
+                f"redis://:{encoded_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+            )
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @computed_field

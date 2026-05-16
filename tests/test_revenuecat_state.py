@@ -61,4 +61,3 @@ async def test_get_current_subscription_record_returns_none_for_latest_inactive(
     )
 
     assert current is None
-

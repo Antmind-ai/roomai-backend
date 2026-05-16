@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
+import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,32 @@ from app.services.platform.endpoints.auth import get_current_user_id
 from app.services.platform.models import DesignRequest
 
 router = APIRouter(prefix="/object-replace", tags=["Object Replace"])
+
+LOCAL_ALLOWED_CONTENT_TYPES: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+}
+
+
+def _persist_uploaded_input_image(
+    *,
+    user_id: uuid.UUID,
+    image_bytes: bytes,
+    content_type: str,
+) -> tuple[uuid.UUID, str]:
+    upload_id = uuid.uuid4()
+    suffix = LOCAL_ALLOWED_CONTENT_TYPES.get(content_type, ".jpg")
+    filename = f"{upload_id}{suffix}"
+
+    user_upload_dir = Path(settings.design_upload_dir) / str(user_id)
+    user_upload_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = user_upload_dir / filename
+    target_path.write_bytes(image_bytes)
+
+    return upload_id, filename
 
 
 @router.post(
@@ -141,6 +169,18 @@ async def replace_object_from_upload(
             ),
         )
 
+    try:
+        input_upload_id, input_filename = _persist_uploaded_input_image(
+            user_id=current_user_id,
+            image_bytes=image_bytes,
+            content_type=content_type,
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not persist uploaded image for My Library preview.",
+        ) from exc
+
     resolved_width = image_width or max(point_x + 1, 1024)
     resolved_height = image_height or max(point_y + 1, 1024)
     point = ObjectReplacePoint(x=point_x, y=point_y, label=1)
@@ -152,6 +192,8 @@ async def replace_object_from_upload(
     design_request = DesignRequest(
         user_id=current_user_id,
         source="upload",
+        input_upload_id=input_upload_id,
+        input_filename=input_filename,
         building_type=normalized_building_type,
         style_id=normalized_style_id,
         palette_id=normalized_palette_id,

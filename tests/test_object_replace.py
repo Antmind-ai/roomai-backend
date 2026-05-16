@@ -7,6 +7,7 @@ from pydantic import ValidationError
 import pytest
 
 from app.services.object_replace import fal_service, storage
+from app.services.object_replace import router as object_replace_router
 from app.services.object_replace.schemas import (
     CreateObjectReplaceUploadRequest,
     ObjectReplacePoint,
@@ -264,6 +265,26 @@ async def test_replace_object_from_uploaded_image_uses_mask_fill_pipeline(
         "fill_request_id": "fill-request-1",
         "prompt": "enhanced prompt",
     }
+
+
+def test_persist_uploaded_input_image_writes_preview_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(object_replace_router.settings, "design_upload_dir", str(tmp_path))
+    user_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+    upload_id, filename = object_replace_router._persist_uploaded_input_image(
+        user_id=user_id,
+        image_bytes=b"fake-image-bytes",
+        content_type="image/webp",
+    )
+
+    assert filename == f"{upload_id}.webp"
+
+    stored_path = tmp_path / str(user_id) / filename
+    assert stored_path.exists()
+    assert stored_path.read_bytes() == b"fake-image-bytes"
 
 
 @pytest.mark.asyncio

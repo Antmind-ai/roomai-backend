@@ -3,8 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 import uuid
 
+from discover_catalog_seed_data import DISCOVER_ASSET_ID_TO_R2_KEY
 from fastapi import HTTPException
 import pytest
+from seed import _build_card_rows
 
 from app.services.platform.endpoints import discover
 
@@ -48,6 +50,27 @@ def _card(
         card_id=card_id,
         image_asset_id=image_asset_id,
     )
+
+
+def test_discover_seed_data_registers_new_r2_assets_and_cards():
+    card_rows = _build_card_rows()
+    cards_by_section: dict[str, list[dict[str, object]]] = {}
+
+    for row in card_rows:
+        image_asset_id = row["image_asset_id"]
+        assert image_asset_id in DISCOVER_ASSET_ID_TO_R2_KEY
+        assert DISCOVER_ASSET_ID_TO_R2_KEY[image_asset_id] == (
+            f"assets/3-4/{image_asset_id}.webp"
+        )
+        cards_by_section.setdefault(str(row["section_id"]), []).append(row)
+
+    assert len(DISCOVER_ASSET_ID_TO_R2_KEY) == 91
+    assert len(card_rows) == 91
+    assert len(cards_by_section["living-room"]) == 21
+    assert len(cards_by_section["kitchen"]) == 11
+    assert len(cards_by_section["house"]) == 11
+    assert len(cards_by_section["villa"]) == 11
+    assert len(cards_by_section["garden-main"]) == 11
 
 
 @pytest.mark.asyncio

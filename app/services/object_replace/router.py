@@ -22,6 +22,7 @@ from app.services.object_replace.schemas import (
 from app.services.platform.credit_service import InsufficientCreditsError, consume_credit
 from app.services.platform.endpoints.auth import get_current_user_id
 from app.services.platform.models import DesignRequest
+from app.services.r2 import build_r2_key, upload_file_async
 from app.workers.client import enqueue_job
 
 router = APIRouter(prefix="/object-replace", tags=["Object Replace"])
@@ -52,6 +53,29 @@ def _persist_uploaded_input_image(
     target_path.write_bytes(image_bytes)
 
     return upload_id, filename
+
+
+async def _persist_uploaded_input_reference(
+    *,
+    user_id: uuid.UUID,
+    image_bytes: bytes,
+    content_type: str,
+) -> tuple[uuid.UUID, str | None, str | None]:
+    upload_id = uuid.uuid4()
+    suffix = LOCAL_ALLOWED_CONTENT_TYPES.get(content_type, ".jpg")
+    filename = f"{upload_id}{suffix}"
+
+    if settings.r2_endpoint_url and settings.r2_bucket_name:
+        r2_key = build_r2_key(str(user_id), filename)
+        await upload_file_async(r2_key, image_bytes, content_type)
+        return upload_id, None, r2_key
+
+    user_upload_dir = Path(settings.design_upload_dir) / str(user_id)
+    user_upload_dir.mkdir(parents=True, exist_ok=True)
+    target_path = user_upload_dir / filename
+    target_path.write_bytes(image_bytes)
+
+    return upload_id, filename, None
 
 
 def _insufficient_credits_detail(exc: InsufficientCreditsError) -> dict[str, object]:
@@ -226,12 +250,12 @@ async def replace_object_from_upload(
         )
 
     try:
-        input_upload_id, input_filename = _persist_uploaded_input_image(
+        input_upload_id, input_filename, input_r2_key = await _persist_uploaded_input_reference(
             user_id=current_user_id,
             image_bytes=image_bytes,
             content_type=content_type,
         )
-    except OSError as exc:
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not persist uploaded image for My Library preview.",
@@ -250,6 +274,7 @@ async def replace_object_from_upload(
         source="upload",
         input_upload_id=input_upload_id,
         input_filename=input_filename,
+        input_r2_key=input_r2_key,
         building_type=normalized_building_type,
         style_id=normalized_style_id,
         palette_id=normalized_palette_id,

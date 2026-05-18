@@ -492,6 +492,8 @@ async def test_replace_object_from_upload_charges_before_enqueueing_job(
     events: list[str] = []
 
     monkeypatch.setattr(object_replace_router.settings, "design_upload_dir", str(tmp_path))
+    monkeypatch.setattr(object_replace_router.settings, "r2_endpoint_url", None)
+    monkeypatch.setattr(object_replace_router.settings, "r2_bucket_name", None)
 
     async def _fake_consume_object_replace_credit(*args, **kwargs):
         assert args[0] is db
@@ -547,6 +549,67 @@ async def test_replace_object_from_upload_charges_before_enqueueing_job(
     assert len(db.added) == 1
     assert db.added[0].status == "queued"
     assert db.added[0].queue_job_id == "object-replace-job-1"
+    assert db.added[0].input_filename is not None
+    assert db.added[0].input_r2_key is None
+
+
+@pytest.mark.asyncio
+async def test_replace_object_from_upload_persists_input_to_r2_before_enqueueing_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_user_id = uuid.uuid4()
+    db = _FakeObjectReplaceDB()
+    uploads: list[tuple[str, bytes, str]] = []
+
+    monkeypatch.setattr(object_replace_router.settings, "r2_endpoint_url", "https://r2.test")
+    monkeypatch.setattr(object_replace_router.settings, "r2_bucket_name", "bucket")
+
+    async def _fake_upload_file_async(key: str, file_data: bytes, content_type: str) -> None:
+        uploads.append((key, file_data, content_type))
+
+    async def _fake_consume_object_replace_credit(*args, **kwargs):
+        assert args[0] is db
+        assert kwargs["user_id"] == current_user_id
+        assert kwargs["commit"] is False
+
+    async def _fake_enqueue_job(function_name: str, **kwargs):
+        assert function_name == "process_object_replace_request_task"
+        assert kwargs["design_request_id"]
+        return "object-replace-job-2"
+
+    monkeypatch.setattr(object_replace_router, "upload_file_async", _fake_upload_file_async)
+    monkeypatch.setattr(
+        object_replace_router,
+        "_consume_object_replace_credit",
+        _fake_consume_object_replace_credit,
+    )
+    monkeypatch.setattr(object_replace_router, "enqueue_job", _fake_enqueue_job)
+
+    response = await object_replace_router.replace_object_from_upload(
+        file=_FakeUploadFile(b"image-bytes"),
+        prompt="replace selected object with cane bed",
+        point_x=10,
+        point_y=12,
+        image_width=100,
+        image_height=100,
+        item_type="furniture",
+        building_type="bedroom",
+        style_id="modern",
+        palette_id="natural",
+        current_user_id=current_user_id,
+        db=db,
+    )
+
+    assert response.status == "queued"
+    assert len(uploads) == 1
+    key, data, content_type = uploads[0]
+    assert key.startswith(f"{current_user_id}/")
+    assert key.endswith(".jpg")
+    assert data == b"image-bytes"
+    assert content_type == "image/jpeg"
+    assert db.added[0].input_upload_id is not None
+    assert db.added[0].input_filename is None
+    assert db.added[0].input_r2_key == key
 
 
 @pytest.mark.asyncio

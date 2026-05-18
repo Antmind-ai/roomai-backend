@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 import zlib
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 import pytest
 
@@ -13,6 +14,44 @@ from app.services.object_replace.schemas import (
     ObjectReplacePoint,
     ReplaceObjectRequest,
 )
+
+
+class _FakeObjectReplaceDB:
+    def __init__(self):
+        self.added: list[object] = []
+        self.flush_count = 0
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        self.flush_count += 1
+        for item in self.added:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
+
+    async def commit(self):
+        self.commit_count += 1
+
+    async def rollback(self):
+        self.rollback_count += 1
+
+
+class _FakeUploadFile:
+    filename = "room.jpg"
+    content_type = "image/jpeg"
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self.closed = False
+
+    async def read(self) -> bytes:
+        return self._data
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def test_upload_schema_rejects_unsupported_content_type() -> None:
@@ -261,10 +300,19 @@ async def test_replace_object_from_uploaded_image_uses_segmentation_mask_fill_pi
         uploads.append((content_type, file_name, len(data)))
         return f"https://files.test/{len(uploads)}"
 
-    async def _fake_generate_mask(*, image_url: str, point: ObjectReplacePoint, item_type: str):
+    async def _fake_generate_mask(
+        *,
+        image_url: str,
+        point: ObjectReplacePoint,
+        item_type: str,
+        expected_width: int | None,
+        expected_height: int | None,
+    ):
         assert image_url == "https://files.test/1"
         assert point == ObjectReplacePoint(x=40, y=30, label=1)
         assert item_type == "chair"
+        assert expected_width == 128
+        assert expected_height == 96
         return "https://files.test/mask.png", "mask-request-1"
 
     async def _fake_inpaint_object(*, image_url: str, mask_url: str, prompt: str):
@@ -367,6 +415,138 @@ def test_persist_uploaded_input_image_writes_preview_file(
 
 
 @pytest.mark.asyncio
+async def test_consume_object_replace_credit_charges_twenty_five_credits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_user_id = uuid.uuid4()
+    db = _FakeObjectReplaceDB()
+    observed: dict[str, object] = {}
+
+    async def _fake_consume_credit(*args, **kwargs):
+        observed["db"] = args[0]
+        observed.update(kwargs)
+
+    monkeypatch.setattr(object_replace_router, "consume_credit", _fake_consume_credit)
+
+    await object_replace_router._consume_object_replace_credit(
+        db,
+        user_id=current_user_id,
+        reference_id="request-123",
+    )
+
+    assert observed == {
+        "db": db,
+        "user_id": current_user_id,
+        "source": "object_replace",
+        "reason": "Furniture swap submitted",
+        "reference_id": "request-123",
+        "credits": 25,
+    }
+    assert db.commit_count == 1
+    assert db.rollback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_consume_object_replace_credit_rejects_insufficient_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = _FakeObjectReplaceDB()
+
+    async def _fake_consume_credit(*_args, **_kwargs):
+        raise object_replace_router.InsufficientCreditsError(
+            balance=0,
+            required_credits=25,
+        )
+
+    monkeypatch.setattr(object_replace_router, "consume_credit", _fake_consume_credit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await object_replace_router._consume_object_replace_credit(
+            db,
+            user_id=uuid.uuid4(),
+            reference_id="request-123",
+        )
+
+    assert exc_info.value.status_code == 402
+    assert exc_info.value.detail == {
+        "error": "insufficient_credits",
+        "message": "No credits remaining. Add credits to continue.",
+        "balance": 0,
+        "required_credits": 25,
+        "lifetime_free_credits": object_replace_router.settings.free_lifetime_credits,
+    }
+    assert db.commit_count == 0
+    assert db.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_replace_object_from_upload_charges_before_calling_fal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    current_user_id = uuid.uuid4()
+    db = _FakeObjectReplaceDB()
+    events: list[str] = []
+
+    monkeypatch.setattr(object_replace_router.settings, "design_upload_dir", str(tmp_path))
+
+    async def _fake_consume_object_replace_credit(*args, **kwargs):
+        assert args[0] is db
+        assert kwargs["user_id"] == current_user_id
+        assert kwargs["reference_id"]
+        events.append("credit")
+        await db.commit()
+
+    async def _fake_replace_object_from_uploaded_image(**_kwargs):
+        events.append("fal")
+        assert events == ["credit", "fal"]
+        return {
+            "image_url": "https://cdn.test/output.jpg",
+            "mask_url": "https://cdn.test/mask.png",
+            "original_image_url": "https://cdn.test/original.jpg",
+            "request_id": "fill-request-1",
+            "mask_request_id": "mask-request-1",
+            "fill_request_id": "fill-request-1",
+            "prompt": "enhanced prompt",
+        }
+
+    monkeypatch.setattr(
+        object_replace_router,
+        "_consume_object_replace_credit",
+        _fake_consume_object_replace_credit,
+    )
+    monkeypatch.setattr(
+        object_replace_router.fal_service,
+        "replace_object_from_uploaded_image",
+        _fake_replace_object_from_uploaded_image,
+    )
+
+    response = await object_replace_router.replace_object_from_upload(
+        file=_FakeUploadFile(b"image-bytes"),
+        prompt="replace chair with modern chair",
+        point_x=10,
+        point_y=12,
+        image_width=100,
+        image_height=100,
+        item_type="chair",
+        building_type="living-room",
+        style_id="modern",
+        palette_id="walnut",
+        current_user_id=current_user_id,
+        db=db,
+    )
+
+    assert events == ["credit", "fal"]
+    assert response.image_url == "https://cdn.test/output.jpg"
+    assert db.flush_count == 1
+    assert db.commit_count == 2
+    assert db.rollback_count == 0
+    assert len(db.added) == 1
+    assert db.added[0].status == "completed"
+    assert db.added[0].output_preview_url == "https://cdn.test/output.jpg"
+
+
+@pytest.mark.asyncio
 async def test_replace_object_calls_fal_segmentation_then_fill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -412,7 +592,7 @@ async def test_replace_object_calls_fal_segmentation_then_fill(
             "fal-ai/sam-3-1/image",
             {
                 "image_url": "https://cdn.test/room.jpg",
-                "prompt": "sofa",
+                "prompt": "indoor furniture object, sofa",
                 "point_prompts": [{"x": 42, "y": 84, "label": 1, "object_id": 1}],
                 "apply_mask": False,
                 "output_format": "png",

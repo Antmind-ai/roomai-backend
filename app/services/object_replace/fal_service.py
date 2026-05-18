@@ -18,6 +18,9 @@ class ObjectReplaceFalError(RuntimeError):
     """Raised when fal.ai cannot complete the Object Replace pipeline."""
 
 
+MIN_SEGMENTATION_SCORE = 0.2
+
+
 def _require_fal_key() -> None:
     if not settings.fal_key:
         raise ObjectReplaceFalError("FAL_KEY is required for Object Replace")
@@ -39,7 +42,7 @@ def build_circular_mask_png(
     if width < 1 or height < 1:
         raise ValueError("Mask dimensions must be positive")
 
-    radius_px = radius if radius is not None else max(28, int(min(width, height) * 0.08))
+    radius_px = radius if radius is not None else max(64, int(min(width, height) * 0.16))
     radius_px = max(8, min(radius_px, max(width, height)))
     radius_sq = radius_px * radius_px
 
@@ -122,6 +125,41 @@ def extract_mask_url(output: dict[str, Any]) -> str:
     raise ObjectReplaceFalError("fal.ai segmentation response did not include a mask URL")
 
 
+def _extract_first_sam_mask(output: dict[str, Any]) -> dict[str, Any]:
+    masks = output.get("masks")
+    if isinstance(masks, list):
+        for item in masks:
+            if isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"]:
+                return item
+
+    raise ObjectReplaceFalError("fal.ai SAM response did not include a mask URL")
+
+
+def _extract_first_sam_score(output: dict[str, Any]) -> float | None:
+    scores = output.get("scores")
+    if isinstance(scores, list) and scores:
+        score = scores[0]
+        if isinstance(score, int | float):
+            return float(score)
+
+    metadata = output.get("metadata")
+    if isinstance(metadata, list) and metadata:
+        first_metadata = metadata[0]
+        if isinstance(first_metadata, dict):
+            score = first_metadata.get("score")
+            if isinstance(score, int | float):
+                return float(score)
+
+    return None
+
+
+def _build_segmentation_prompt(item_type: str) -> str:
+    normalized_item_type = item_type.strip()[:80] or "furniture"
+    if normalized_item_type.lower() == "furniture":
+        return "indoor furniture object"
+    return f"indoor furniture object, {normalized_item_type}"
+
+
 def extract_fill_image_url(output: dict[str, Any]) -> str:
     images = output.get("images")
     if isinstance(images, list):
@@ -196,6 +234,8 @@ async def generate_mask(
     image_url: str,
     point: ObjectReplacePoint,
     item_type: str = "furniture",
+    expected_width: int | None = None,
+    expected_height: int | None = None,
 ) -> tuple[str, str | None]:
     model_id = settings.fal_segmentation_model_id
     if model_id == "fal-ai/fast-sam":
@@ -212,7 +252,7 @@ async def generate_mask(
     else:
         arguments = {
             "image_url": image_url,
-            "prompt": item_type,
+            "prompt": _build_segmentation_prompt(item_type),
             "point_prompts": [
                 {
                     "x": point.x,
@@ -234,6 +274,48 @@ async def generate_mask(
         arguments=arguments,
         stage="mask",
     )
+
+    if model_id == "fal-ai/sam-3-1/image":
+        mask = _extract_first_sam_mask(output)
+        mask_url = str(mask["url"])
+        mask_width = mask.get("width")
+        mask_height = mask.get("height")
+        score = _extract_first_sam_score(output)
+
+        if (
+            expected_width is not None
+            and isinstance(mask_width, int)
+            and mask_width != expected_width
+        ):
+            raise ObjectReplaceFalError(
+                f"fal.ai SAM mask width {mask_width} did not match image width {expected_width}"
+            )
+        if (
+            expected_height is not None
+            and isinstance(mask_height, int)
+            and mask_height != expected_height
+        ):
+            raise ObjectReplaceFalError(
+                f"fal.ai SAM mask height {mask_height} did not match image height {expected_height}"
+            )
+        if score is not None and score < MIN_SEGMENTATION_SCORE:
+            raise ObjectReplaceFalError(
+                f"fal.ai SAM mask confidence {score:.3f} was too low"
+            )
+
+        logger.info(
+            "fal.ai SAM mask selected | request_id={} | item_type={} | point=({}, {}) | "
+            "mask_size={}x{} | score={}",
+            request_id,
+            item_type,
+            point.x,
+            point.y,
+            mask_width,
+            mask_height,
+            score,
+        )
+        return mask_url, request_id
+
     return extract_mask_url(output), request_id
 
 
@@ -270,11 +352,15 @@ async def replace_object(
     point: ObjectReplacePoint,
     prompt: str,
     item_type: str = "furniture",
+    image_width: int | None = None,
+    image_height: int | None = None,
 ) -> dict[str, str | None]:
     mask_url, mask_request_id = await generate_mask(
         image_url=image_url,
         point=point,
         item_type=item_type,
+        expected_width=image_width,
+        expected_height=image_height,
     )
     image_url_out, fill_request_id, final_prompt = await inpaint_object(
         image_url=image_url,
@@ -315,6 +401,8 @@ async def replace_object_from_uploaded_image(
             image_url=original_image_url,
             point=point,
             item_type=item_type,
+            expected_width=image_width,
+            expected_height=image_height,
         )
     except ObjectReplaceFalError:
         logger.warning(

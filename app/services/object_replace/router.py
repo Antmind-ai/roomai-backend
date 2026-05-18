@@ -19,10 +19,12 @@ from app.services.object_replace.schemas import (
     ReplaceObjectRequest,
     normalize_item_type,
 )
+from app.services.platform.credit_service import InsufficientCreditsError, consume_credit
 from app.services.platform.endpoints.auth import get_current_user_id
 from app.services.platform.models import DesignRequest
 
 router = APIRouter(prefix="/object-replace", tags=["Object Replace"])
+OBJECT_REPLACE_CREDIT_COST = 25
 
 LOCAL_ALLOWED_CONTENT_TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -49,6 +51,46 @@ def _persist_uploaded_input_image(
     target_path.write_bytes(image_bytes)
 
     return upload_id, filename
+
+
+def _insufficient_credits_detail(exc: InsufficientCreditsError) -> dict[str, object]:
+    return {
+        "error": "insufficient_credits",
+        "message": "No credits remaining. Add credits to continue.",
+        "balance": exc.balance,
+        "required_credits": exc.required_credits,
+        "lifetime_free_credits": settings.free_lifetime_credits,
+    }
+
+
+async def _consume_object_replace_credit(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    reference_id: str,
+) -> None:
+    try:
+        await consume_credit(
+            db,
+            user_id=user_id,
+            source="object_replace",
+            reason="Furniture swap submitted",
+            reference_id=reference_id,
+            credits=OBJECT_REPLACE_CREDIT_COST,
+        )
+        await db.commit()
+    except InsufficientCreditsError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=_insufficient_credits_detail(exc),
+        ) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        ) from exc
 
 
 @router.post(
@@ -214,8 +256,14 @@ async def replace_object_from_upload(
 
     db.add(design_request)
     try:
-        await db.commit()
-        await db.refresh(design_request)
+        await db.flush()
+        await _consume_object_replace_credit(
+            db,
+            user_id=current_user_id,
+            reference_id=str(design_request.id),
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         await db.rollback()
         raise HTTPException(
@@ -279,14 +327,24 @@ async def replace_object_from_upload(
 )
 async def replace_object_in_image(
     payload: ReplaceObjectRequest,
-    _current_user_id=Depends(get_current_user_id),
+    current_user_id=Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
 ) -> ObjectReplaceResponse:
+    credit_reference_id = str(uuid.uuid4())
+    await _consume_object_replace_credit(
+        db,
+        user_id=current_user_id,
+        reference_id=credit_reference_id,
+    )
+
     try:
         result = await fal_service.replace_object(
             image_url=payload.original_image_url,
             point=payload.point,
             prompt=payload.prompt,
             item_type=payload.item_type,
+            image_width=payload.image_width,
+            image_height=payload.image_height,
         )
     except fal_service.ObjectReplaceFalError as exc:
         raise HTTPException(

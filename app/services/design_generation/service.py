@@ -10,14 +10,6 @@ from app.services.design_generation.models import (
 )
 from app.services.higgsfield import client as higgsfield_provider
 
-# Model ID → credits consumed per image
-MODEL_CREDIT_COST: dict[str, int] = {
-    "fal-ai/bytedance/seedream/v4.5/edit": 25,
-    "fal-ai/nano-banana-pro/edit": 75,
-    # Higgsfield model IDs
-    "seedream_v4_5": 25,
-}
-
 # Model ID → USD cost per image (fal.ai pricing)
 MODEL_API_COST: dict[str, float] = {
     "fal-ai/bytedance/seedream/v4.5/edit": 0.04,
@@ -26,10 +18,6 @@ MODEL_API_COST: dict[str, float] = {
     # Higgsfield model IDs
     "seedream_v4_5": 0.04,
 }
-
-
-def get_model_credit_cost(model: str) -> int:
-    return MODEL_CREDIT_COST.get(model, 25)
 
 
 def get_model_api_cost(model: str) -> float:

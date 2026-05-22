@@ -11,8 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.services.platform.credit_service import InsufficientCreditsError, consume_credit
 from app.services.platform.endpoints.auth import get_current_user_id
+from app.services.platform.generation_quota_service import (
+    GenerationQuotaExceededError,
+    quota_exceeded_detail,
+    reserve_generation_quota,
+)
 from app.services.platform.models import DesignRequest, DiscoverAsset, DiscoverCard
 from app.services.platform.schemas.design import (
     CreateDesignRequest,
@@ -467,24 +471,17 @@ async def submit_design_request(
     try:
         await db.flush()
 
-        await consume_credit(
+        await reserve_generation_quota(
             db,
             user_id=current_user_id,
-            source="design_request",
-            reason="Design request submitted",
+            generation_type="design_request",
             reference_id=str(design_request.id),
         )
-    except InsufficientCreditsError as exc:
+    except GenerationQuotaExceededError as exc:
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "error": "insufficient_credits",
-                "message": "No credits remaining. Add credits to continue.",
-                "balance": exc.balance,
-                "required_credits": exc.required_credits,
-                "lifetime_free_credits": settings.free_lifetime_credits,
-            },
+            status_code=_quota_error_status_code(exc),
+            detail=quota_exceeded_detail(exc),
         ) from exc
     except ValueError as exc:
         await db.rollback()
@@ -517,3 +514,9 @@ async def submit_design_request(
         queue_job_id=design_request.queue_job_id,
         prompt=design_request.prompt,
     )
+
+
+def _quota_error_status_code(exc: GenerationQuotaExceededError) -> int:
+    if exc.reason == "free_trial_exhausted":
+        return status.HTTP_402_PAYMENT_REQUIRED
+    return status.HTTP_429_TOO_MANY_REQUESTS

@@ -7,8 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.services.platform import revenuecat_api, revenuecat_service
-from app.services.platform.credit_service import add_credits, get_credit_balance
 from app.services.platform.endpoints.auth import get_current_user_id
+from app.services.platform.generation_quota_service import (
+    get_generation_quota,
+    quota_snapshot_payload,
+)
+from app.services.platform.schemas.generation import GenerationQuotaResponse
 from app.services.platform.schemas.subscription import (
     RestoreResponse,
     SubscriptionMeResponse,
@@ -31,12 +35,14 @@ async def list_products() -> SubscriptionProductsResponse:
         SubscriptionProductResponse(
             product_id=settings.subscription_weekly_product_id,
             plan_type="weekly",
-            credit_amount=settings.subscription_weekly_credits,
+            daily_generation_limit=settings.subscription_daily_generation_limit,
+            weekly_generation_limit=settings.subscription_weekly_generation_limit,
         ),
         SubscriptionProductResponse(
             product_id=settings.subscription_yearly_product_id,
             plan_type="yearly",
-            credit_amount=settings.subscription_yearly_credits,
+            daily_generation_limit=settings.subscription_daily_generation_limit,
+            weekly_generation_limit=settings.subscription_weekly_generation_limit,
         ),
     ]
     return SubscriptionProductsResponse(products=products)
@@ -45,19 +51,20 @@ async def list_products() -> SubscriptionProductsResponse:
 @router.get(
     "/me",
     response_model=SubscriptionMeResponse,
-    summary="Get current user's subscription status and balance",
+    summary="Get current user's subscription status and generation quota",
 )
 async def subscription_me(
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> SubscriptionMeResponse:
     try:
-        balance = await get_credit_balance(db, current_user_id)
+        quota = await get_generation_quota(db, current_user_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         ) from exc
+    quota_response = GenerationQuotaResponse(**quota_snapshot_payload(quota))
 
     latest_purchase = await revenuecat_service.get_current_subscription_record(
         db,
@@ -68,33 +75,18 @@ async def subscription_me(
         return SubscriptionMeResponse(
             user_id=current_user_id,
             has_active_subscription=False,
-            balance=balance,
+            quota=quota_response,
         )
-
-    plan_type = (
-        "weekly"
-        if latest_purchase.revenuecat_product_id == settings.subscription_weekly_product_id
-        else "yearly"
-        if latest_purchase.revenuecat_product_id == settings.subscription_yearly_product_id
-        else "unknown"
-    )
-
-    credit_amount = (
-        settings.subscription_weekly_credits
-        if plan_type == "weekly"
-        else settings.subscription_yearly_credits
-        if plan_type == "yearly"
-        else 0
-    )
 
     return SubscriptionMeResponse(
         user_id=current_user_id,
         has_active_subscription=True,
         product_id=latest_purchase.revenuecat_product_id,
-        plan_type=plan_type,
-        credit_amount=credit_amount,
+        plan_type=revenuecat_service.get_plan_type_for_product(
+            latest_purchase.revenuecat_product_id
+        ),
         expires_at=latest_purchase.expires_at.isoformat() if latest_purchase.expires_at else None,
-        balance=balance,
+        quota=quota_response,
     )
 
 
@@ -113,13 +105,7 @@ async def restore_purchase(
             detail="RevenueCat API key not configured",
         )
 
-    try:
-        balance = await get_credit_balance(db, current_user_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        ) from exc
+    initial_quota = await _load_quota_response(db, current_user_id)
 
     try:
         subscriber_data = await revenuecat_api.fetch_subscriber(str(current_user_id))
@@ -135,7 +121,7 @@ async def restore_purchase(
         return RestoreResponse(
             user_id=current_user_id,
             has_active_subscription=False,
-            balance=balance,
+            quota=initial_quota,
         )
 
     entitlements = revenuecat_api.extract_active_entitlements(subscriber)
@@ -146,7 +132,7 @@ async def restore_purchase(
         return RestoreResponse(
             user_id=current_user_id,
             has_active_subscription=False,
-            balance=balance,
+            quota=initial_quota,
         )
 
     purchase_info = revenuecat_api.extract_latest_purchase(subscriber, ent_id)
@@ -154,48 +140,19 @@ async def restore_purchase(
         return RestoreResponse(
             user_id=current_user_id,
             has_active_subscription=False,
-            balance=balance,
+            quota=initial_quota,
         )
 
     product_id = purchase_info["product_id"]
     expires_at = revenuecat_api.parse_iso_datetime(purchase_info["expires_date"])
     purchased_at = revenuecat_api.parse_iso_datetime(purchase_info["purchase_date"])
 
-    plan_type = (
-        "weekly"
-        if product_id == settings.subscription_weekly_product_id
-        else "yearly"
-        if product_id == settings.subscription_yearly_product_id
-        else "unknown"
-    )
-    credit_amount = (
-        settings.subscription_weekly_credits
-        if plan_type == "weekly"
-        else settings.subscription_yearly_credits
-        if plan_type == "yearly"
-        else 0
-    )
+    plan_type = revenuecat_service.get_plan_type_for_product(product_id)
 
     event_id = f"restore:{current_user_id!s}:{product_id}"
     is_duplicate = await revenuecat_service.is_duplicate_event(db, event_id)
 
-    credits_granted = 0
     if not is_duplicate:
-        if credit_amount > 0:
-            try:
-                result = await add_credits(
-                    db,
-                    user_id=current_user_id,
-                    credits=credit_amount,
-                    source="subscription_restore",
-                    reason=f"Restore: {product_id}",
-                    reference_id=event_id,
-                    idempotency_key=event_id,
-                )
-                credits_granted = result.applied_delta
-            except Exception as exc:
-                logger.warning("Failed to grant credits during restore: %s", exc)
-
         await revenuecat_service.record_purchase_event(
             db,
             user_id=current_user_id,
@@ -204,7 +161,6 @@ async def restore_purchase(
             product_id=product_id,
             transaction_id=event_id,
             environment=settings.app_environment,
-            credit_amount=credit_amount,
             is_active=True,
             purchased_at=purchased_at,
             expires_at=expires_at,
@@ -212,15 +168,27 @@ async def restore_purchase(
         )
         await db.commit()
 
-    new_balance = balance + credits_granted
+    quota = await _load_quota_response(db, current_user_id)
 
     return RestoreResponse(
         user_id=current_user_id,
         has_active_subscription=True,
         product_id=product_id,
         plan_type=plan_type,
-        credit_amount=credit_amount,
         expires_at=expires_at.isoformat() if expires_at else None,
-        balance=new_balance,
-        credits_granted=credits_granted,
+        quota=quota,
     )
+
+
+async def _load_quota_response(
+    db: AsyncSession,
+    current_user_id: uuid.UUID,
+) -> GenerationQuotaResponse:
+    try:
+        quota = await get_generation_quota(db, current_user_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        ) from exc
+    return GenerationQuotaResponse(**quota_snapshot_payload(quota))

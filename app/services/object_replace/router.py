@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import uuid
 
@@ -19,14 +20,20 @@ from app.services.object_replace.schemas import (
     ReplaceObjectRequest,
     normalize_item_type,
 )
-from app.services.platform.credit_service import InsufficientCreditsError, consume_credit
 from app.services.platform.endpoints.auth import get_current_user_id
+from app.services.platform.generation_quota_service import (
+    GenerationQuotaExceededError,
+    complete_generation_quota,
+    quota_exceeded_detail,
+    release_generation_quota,
+    reserve_generation_quota,
+)
 from app.services.platform.models import DesignRequest
 from app.services.r2 import build_r2_key, upload_file_async
 from app.workers.client import enqueue_job
 
 router = APIRouter(prefix="/object-replace", tags=["Object Replace"])
-OBJECT_REPLACE_CREDIT_COST = 25
+logger = logging.getLogger(__name__)
 
 LOCAL_ALLOWED_CONTENT_TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -78,17 +85,7 @@ async def _persist_uploaded_input_reference(
     return upload_id, filename, None
 
 
-def _insufficient_credits_detail(exc: InsufficientCreditsError) -> dict[str, object]:
-    return {
-        "error": "insufficient_credits",
-        "message": "No credits remaining. Add credits to continue.",
-        "balance": exc.balance,
-        "required_credits": exc.required_credits,
-        "lifetime_free_credits": settings.free_lifetime_credits,
-    }
-
-
-async def _consume_object_replace_credit(
+async def _reserve_object_replace_generation(
     db: AsyncSession,
     *,
     user_id: uuid.UUID,
@@ -96,21 +93,19 @@ async def _consume_object_replace_credit(
     commit: bool = True,
 ) -> None:
     try:
-        await consume_credit(
+        await reserve_generation_quota(
             db,
             user_id=user_id,
-            source="object_replace",
-            reason="Furniture swap submitted",
+            generation_type="object_replace",
             reference_id=reference_id,
-            credits=OBJECT_REPLACE_CREDIT_COST,
         )
         if commit:
             await db.commit()
-    except InsufficientCreditsError as exc:
+    except GenerationQuotaExceededError as exc:
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=_insufficient_credits_detail(exc),
+            status_code=_quota_error_status_code(exc),
+            detail=quota_exceeded_detail(exc),
         ) from exc
     except ValueError as exc:
         await db.rollback()
@@ -118,6 +113,50 @@ async def _consume_object_replace_credit(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         ) from exc
+
+
+async def _complete_object_replace_generation(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    reference_id: str,
+) -> None:
+    await complete_generation_quota(
+        db,
+        user_id=user_id,
+        generation_type="object_replace",
+        reference_id=reference_id,
+    )
+    await db.commit()
+
+
+async def _release_object_replace_generation(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    reference_id: str,
+) -> None:
+    try:
+        await release_generation_quota(
+            db,
+            user_id=user_id,
+            generation_type="object_replace",
+            reference_id=reference_id,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "Failed to release object replace generation quota | user_id=%s reference_id=%s",
+            user_id,
+            reference_id,
+        )
+
+
+def _quota_error_status_code(exc: GenerationQuotaExceededError) -> int:
+    if exc.reason == "free_trial_exhausted":
+        return status.HTTP_402_PAYMENT_REQUIRED
+    return status.HTTP_429_TOO_MANY_REQUESTS
 
 
 @router.post(
@@ -286,7 +325,7 @@ async def replace_object_from_upload(
     db.add(design_request)
     try:
         await db.flush()
-        await _consume_object_replace_credit(
+        await _reserve_object_replace_generation(
             db,
             user_id=current_user_id,
             reference_id=str(design_request.id),
@@ -336,11 +375,11 @@ async def replace_object_in_image(
     current_user_id=Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> ObjectReplaceResponse:
-    credit_reference_id = str(uuid.uuid4())
-    await _consume_object_replace_credit(
+    generation_reference_id = str(uuid.uuid4())
+    await _reserve_object_replace_generation(
         db,
         user_id=current_user_id,
-        reference_id=credit_reference_id,
+        reference_id=generation_reference_id,
     )
 
     try:
@@ -353,9 +392,27 @@ async def replace_object_in_image(
             image_height=payload.image_height,
         )
     except fal_service.ObjectReplaceFalError as exc:
+        await _release_object_replace_generation(
+            db,
+            user_id=current_user_id,
+            reference_id=generation_reference_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
+        ) from exc
+
+    try:
+        await _complete_object_replace_generation(
+            db,
+            user_id=current_user_id,
+            reference_id=generation_reference_id,
+        )
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not finalize object replacement usage. Please try again.",
         ) from exc
 
     return ObjectReplaceResponse(

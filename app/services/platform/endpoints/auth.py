@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +12,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import InvalidTokenError, create_access_token, decode_access_token
 from app.services.platform import revenuecat_api, revenuecat_service
-from app.services.platform.models import CreditLedgerEvent, DeviceCreditGrant, DeviceUser
+from app.services.platform.models import DeviceUser
 from app.services.platform.schemas.auth import (
     AuthMeResponse,
     DeleteAccountResponse,
@@ -65,65 +64,18 @@ async def _purge_deleted_user_with_device_id(
     await db.flush()
 
 
-async def _claim_device_credit_grant(
-    db: AsyncSession,
-    *,
-    device_id: str,
-    first_user_id: uuid.UUID,
-    credits: int,
-) -> bool:
-    grant_id = uuid.uuid4()
-    statement = (
-        pg_insert(DeviceCreditGrant)
-        .values(
-            id=grant_id,
-            device_id=device_id,
-            first_user_id=first_user_id,
-            credits_granted=credits,
-        )
-        .on_conflict_do_nothing(index_elements=[DeviceCreditGrant.device_id])
-        .returning(DeviceCreditGrant.id)
-    )
-
-    result = await db.execute(statement)
-    return result.scalar_one_or_none() is not None
-
-
-async def _create_user_with_device_lifetime_grant(
+async def _create_user(
     db: AsyncSession,
     *,
     device_id: str,
     now: datetime,
 ) -> DeviceUser:
-    initial_credits = settings.free_lifetime_credits
     user = DeviceUser(
         device_id=device_id,
         last_seen_at=now,
-        credit_balance=0,
     )
     db.add(user)
     await db.flush()
-
-    grant_claimed = await _claim_device_credit_grant(
-        db,
-        device_id=device_id,
-        first_user_id=user.id,
-        credits=initial_credits,
-    )
-
-    if grant_claimed and initial_credits > 0:
-        user.credit_balance = initial_credits
-        db.add(
-            CreditLedgerEvent(
-                user_id=user.id,
-                delta=initial_credits,
-                balance_after=initial_credits,
-                source="signup_grant",
-                reason="Initial free lifetime credits",
-            )
-        )
-        await db.flush()
-
     return user
 
 
@@ -162,21 +114,21 @@ async def device_login(
 
     if user is None:
         try:
-            user = await _create_user_with_device_lifetime_grant(
+            user = await _create_user(
                 db,
                 device_id=payload.device_id,
                 now=now,
             )
         except IntegrityError:
             # The device_id already exists because of a concurrent login.
-            # Reuse that row and do not grant credits again.
+            # Reuse that row.
             await db.rollback()
             user = await _load_user_by_device_id(db, device_id=payload.device_id)
             if user is None:
                 raise
             if user.deleted_at is not None:
                 await _purge_deleted_user_with_device_id(db, user=user)
-                user = await _create_user_with_device_lifetime_grant(
+                user = await _create_user(
                     db,
                     device_id=payload.device_id,
                     now=now,
@@ -297,19 +249,6 @@ async def delete_account(
             )
 
     now = datetime.now(UTC)
-    if user.credit_balance > 0:
-        credits_to_forfeit = int(user.credit_balance)
-        db.add(
-            CreditLedgerEvent(
-                user_id=user.id,
-                delta=-credits_to_forfeit,
-                balance_after=0,
-                source="account_deletion_forfeit",
-                reason="Account deletion forfeited remaining credits",
-            )
-        )
-        user.credit_balance = 0
-
     await db.delete(user)
     await db.commit()
 

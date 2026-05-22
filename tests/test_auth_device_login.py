@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.services.platform.endpoints import auth
-from app.services.platform.models.credit import CreditLedgerEvent
 from app.services.platform.models.user import DeviceUser
 from app.services.platform.schemas.auth import DeviceLoginRequest
 
@@ -70,42 +69,30 @@ class _FakeAsyncSession:
 
 
 @pytest.mark.asyncio
-async def test_device_login_new_device_grants_twenty_five_credits(monkeypatch):
-    grant_id = uuid.uuid4()
+async def test_device_login_new_device_creates_user(monkeypatch):
     db = _FakeAsyncSession(
-        execute_results=[None, grant_id],
-        flush_effects=[None, None],
+        execute_results=[None],
+        flush_effects=[None],
     )
 
-    monkeypatch.setattr(auth.settings, "free_lifetime_credits", 25)
     monkeypatch.setattr(auth, "create_access_token", lambda subject: f"token-for:{subject}")
 
     response = await auth.device_login(DeviceLoginRequest(device_id="device-123"), db)
 
     created_user = next(item for item in db.added if isinstance(item, DeviceUser))
-    signup_events = [
-        item
-        for item in db.added
-        if isinstance(item, CreditLedgerEvent) and item.source == "signup_grant"
-    ]
 
     assert response.user_id == created_user.id
-    assert created_user.credit_balance == 25
-    assert len(signup_events) == 1
-    assert signup_events[0].delta == 25
-    assert signup_events[0].balance_after == 25
     assert db.commit_count == 1
 
 
 @pytest.mark.asyncio
-async def test_device_login_existing_active_device_does_not_grant_credits(monkeypatch):
+async def test_device_login_existing_active_device_updates_last_seen(monkeypatch):
     user_id = uuid.uuid4()
     now_before = datetime.now(UTC)
     existing_user = SimpleNamespace(
         id=user_id,
         device_id="device-123",
         deleted_at=None,
-        credit_balance=7,
         onboarding_completed=True,
         last_seen_at=None,
     )
@@ -116,11 +103,9 @@ async def test_device_login_existing_active_device_does_not_grant_credits(monkey
     response = await auth.device_login(DeviceLoginRequest(device_id="device-123"), db)
 
     assert response.user_id == user_id
-    assert existing_user.credit_balance == 7
     assert existing_user.onboarding_completed is True
     assert existing_user.last_seen_at is not None
     assert existing_user.last_seen_at >= now_before
-    assert not any(isinstance(item, CreditLedgerEvent) for item in db.added)
 
 
 @pytest.mark.asyncio
@@ -130,11 +115,10 @@ async def test_device_login_deleted_user_creates_new_user(monkeypatch):
         id=deleted_user_id,
         device_id="device-123",
         deleted_at=datetime(2026, 5, 1, tzinfo=UTC),
-        credit_balance=0,
         onboarding_completed=True,
         last_seen_at=None,
     )
-    db = _FakeAsyncSession(execute_results=[deleted_user, None])
+    db = _FakeAsyncSession(execute_results=[deleted_user])
 
     monkeypatch.setattr(auth, "create_access_token", lambda subject: f"token-for:{subject}")
 
@@ -144,31 +128,10 @@ async def test_device_login_deleted_user_creates_new_user(monkeypatch):
     assert response.access_token == f"token-for:{response.user_id}"
     assert deleted_user in db.deleted
     assert db.rollback_count == 0
-    assert not any(isinstance(item, CreditLedgerEvent) for item in db.added)
 
 
 @pytest.mark.asyncio
-async def test_device_login_new_user_with_existing_device_grant_starts_at_zero(
-    monkeypatch,
-):
-    db = _FakeAsyncSession(
-        execute_results=[None, None],
-        flush_effects=[None],
-    )
-
-    monkeypatch.setattr(auth.settings, "free_lifetime_credits", 25)
-    monkeypatch.setattr(auth, "create_access_token", lambda subject: f"token-for:{subject}")
-
-    response = await auth.device_login(DeviceLoginRequest(device_id="device-123"), db)
-
-    created_user = next(item for item in db.added if isinstance(item, DeviceUser))
-    assert response.user_id == created_user.id
-    assert created_user.credit_balance == 0
-    assert not any(isinstance(item, CreditLedgerEvent) for item in db.added)
-
-
-@pytest.mark.asyncio
-async def test_device_login_concurrent_duplicate_device_does_not_grant_credits(
+async def test_device_login_concurrent_duplicate_device_reuses_existing_user(
     monkeypatch,
 ):
     user_id = uuid.uuid4()
@@ -176,7 +139,6 @@ async def test_device_login_concurrent_duplicate_device_does_not_grant_credits(
         id=user_id,
         device_id="device-123",
         deleted_at=None,
-        credit_balance=25,
         onboarding_completed=True,
         last_seen_at=None,
     )
@@ -190,18 +152,15 @@ async def test_device_login_concurrent_duplicate_device_does_not_grant_credits(
     response = await auth.device_login(DeviceLoginRequest(device_id="device-123"), db)
 
     assert response.user_id == user_id
-    assert existing_user.credit_balance == 25
     assert db.rollback_count == 1
-    assert not any(isinstance(item, CreditLedgerEvent) for item in db.added)
 
 
 @pytest.mark.asyncio
-async def test_delete_account_forfeits_remaining_credits(monkeypatch):
+async def test_delete_account_deletes_user(monkeypatch):
     user_id = uuid.uuid4()
     user = SimpleNamespace(
         id=user_id,
         deleted_at=None,
-        credit_balance=17,
     )
     db = _FakeAsyncSession(execute_results=[user])
 
@@ -222,15 +181,6 @@ async def test_delete_account_forfeits_remaining_credits(monkeypatch):
 
     response = await auth.delete_account(current_user_id=user_id, db=db)
 
-    forfeiture_events = [
-        item
-        for item in db.added
-        if isinstance(item, CreditLedgerEvent) and item.source == "account_deletion_forfeit"
-    ]
     assert response.user_id == user_id
     assert response.job_id == "cleanup-job-123"
-    assert user.credit_balance == 0
     assert user in db.deleted
-    assert len(forfeiture_events) == 1
-    assert forfeiture_events[0].delta == -17
-    assert forfeiture_events[0].balance_after == 0

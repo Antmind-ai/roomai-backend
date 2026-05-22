@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services.platform import revenuecat_service
-from app.services.platform.credit_service import add_credits
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +54,6 @@ async def revenuecat_webhook(
         if await revenuecat_service.is_duplicate_event(db, event_id):
             return {"status": "ok", "result": "idempotent_skip"}
 
-        credit_amount = revenuecat_service.get_credit_amount_for_product(product_id)
-
         is_active = False
         purchased_at = None
         expires_at = None
@@ -76,17 +73,6 @@ async def revenuecat_webhook(
         if event_type in ("INITIAL_PURCHASE", "RENEWAL", "NON_RENEWING_PURCHASE"):
             is_active = True
 
-            if credit_amount > 0:
-                await add_credits(
-                    db,
-                    user_id=user_id,
-                    credits=credit_amount,
-                    source="subscription",
-                    reason=f"{event_type}: {product_id}",
-                    reference_id=transaction_id,
-                    idempotency_key=f"rc:{event_id}",
-                )
-
         elif event_type in ("CANCELLATION", "EXPIRATION"):
             is_active = False
 
@@ -98,7 +84,6 @@ async def revenuecat_webhook(
             product_id=product_id,
             transaction_id=transaction_id or event_id,
             environment=environment,
-            credit_amount=credit_amount,
             is_active=is_active,
             purchased_at=purchased_at,
             expires_at=expires_at,
@@ -108,10 +93,9 @@ async def revenuecat_webhook(
         await db.commit()
 
         logger.info(
-            "RevenueCat event processed: type=%s product=%s credits=%d user=%s",
+            "RevenueCat event processed: type=%s product=%s user=%s",
             event_type,
             product_id,
-            credit_amount,
             str(user_id),
         )
 

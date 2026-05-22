@@ -2,11 +2,14 @@ import uuid
 
 from pydantic import BaseModel
 
+from app.services.platform.schemas.generation import GenerationQuotaResponse
+
 
 class SubscriptionProductResponse(BaseModel):
     product_id: str
     plan_type: str
-    credit_amount: int
+    daily_generation_limit: int
+    weekly_generation_limit: int
 
 
 class SubscriptionProductsResponse(BaseModel):
@@ -18,10 +21,8 @@ class RestoreResponse(BaseModel):
     has_active_subscription: bool
     product_id: str | None = None
     plan_type: str | None = None
-    credit_amount: int | None = None
     expires_at: str | None = None
-    balance: int
-    credits_granted: int = 0
+    quota: GenerationQuotaResponse
 
 
 class SubscriptionMeResponse(BaseModel):
@@ -29,6 +30,5 @@ class SubscriptionMeResponse(BaseModel):
     has_active_subscription: bool
     product_id: str | None = None
     plan_type: str | None = None
-    credit_amount: int | None = None
     expires_at: str | None = None
-    balance: int
+    quota: GenerationQuotaResponse

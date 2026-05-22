@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import logging
 import secrets
@@ -53,13 +53,13 @@ def extract_event_fields(event: dict) -> tuple[str, str, str, str | None, str | 
     return event_type, event_id, product_id, transaction_id, environment, app_user_id
 
 
-def get_credit_amount_for_product(product_id: str) -> int:
+def get_plan_type_for_product(product_id: str) -> str:
     if product_id == settings.subscription_weekly_product_id:
-        return settings.subscription_weekly_credits
+        return "weekly"
     if product_id == settings.subscription_yearly_product_id:
-        return settings.subscription_yearly_credits
-    logger.warning("Unknown product_id: %s, granting 0 credits", product_id)
-    return 0
+        return "yearly"
+    logger.warning("Unknown subscription product_id: %s", product_id)
+    return "unknown"
 
 
 def parse_user_id(app_user_id: str | None) -> uuid.UUID | None:
@@ -81,7 +81,6 @@ async def record_purchase_event(
     product_id: str,
     transaction_id: str,
     environment: str | None,
-    credit_amount: int,
     is_active: bool,
     purchased_at: datetime | None,
     expires_at: datetime | None,
@@ -96,7 +95,6 @@ async def record_purchase_event(
         revenuecat_product_id=product_id,
         event_type=event_type,
         environment=environment,
-        credit_amount_granted=credit_amount,
         is_active_subscription=is_active,
         purchased_at=purchased_at,
         expires_at=expires_at,
@@ -133,5 +131,7 @@ async def get_current_subscription_record(
     )
     record = result.scalar_one_or_none()
     if record is None or not record.is_active_subscription:
+        return None
+    if record.expires_at is not None and record.expires_at <= datetime.now(UTC):
         return None
     return record

@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,9 +21,6 @@ class SubscriptionProduct(Base):
     )
     plan_type: Mapped[str] = mapped_column(
         String(20), nullable=False
-    )
-    credit_amount: Mapped[int] = mapped_column(
-        Integer, nullable=False
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
@@ -70,9 +67,6 @@ class PurchaseRecord(Base):
     )
     environment: Mapped[str | None] = mapped_column(
         String(20), nullable=True
-    )
-    credit_amount_granted: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
     )
     is_active_subscription: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")

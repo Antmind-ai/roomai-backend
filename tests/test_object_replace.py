@@ -14,6 +14,7 @@ from app.services.object_replace.schemas import (
     ObjectReplacePoint,
     ReplaceObjectRequest,
 )
+from app.services.platform.generation_quota_service import GenerationQuotaSnapshot
 
 
 class _FakeObjectReplaceDB:
@@ -418,20 +419,24 @@ def test_persist_uploaded_input_image_writes_preview_file(
 
 
 @pytest.mark.asyncio
-async def test_consume_object_replace_credit_charges_twenty_five_credits(
+async def test_reserve_object_replace_generation_reserves_quota(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current_user_id = uuid.uuid4()
     db = _FakeObjectReplaceDB()
     observed: dict[str, object] = {}
 
-    async def _fake_consume_credit(*args, **kwargs):
+    async def _fake_reserve_generation_quota(*args, **kwargs):
         observed["db"] = args[0]
         observed.update(kwargs)
 
-    monkeypatch.setattr(object_replace_router, "consume_credit", _fake_consume_credit)
+    monkeypatch.setattr(
+        object_replace_router,
+        "reserve_generation_quota",
+        _fake_reserve_generation_quota,
+    )
 
-    await object_replace_router._consume_object_replace_credit(
+    await object_replace_router._reserve_object_replace_generation(
         db,
         user_id=current_user_id,
         reference_id="request-123",
@@ -440,50 +445,62 @@ async def test_consume_object_replace_credit_charges_twenty_five_credits(
     assert observed == {
         "db": db,
         "user_id": current_user_id,
-        "source": "object_replace",
-        "reason": "Furniture swap submitted",
+        "generation_type": "object_replace",
         "reference_id": "request-123",
-        "credits": 25,
     }
     assert db.commit_count == 1
     assert db.rollback_count == 0
 
 
 @pytest.mark.asyncio
-async def test_consume_object_replace_credit_rejects_insufficient_balance(
+async def test_reserve_object_replace_generation_rejects_exhausted_trial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    user_id = uuid.uuid4()
     db = _FakeObjectReplaceDB()
 
-    async def _fake_consume_credit(*_args, **_kwargs):
-        raise object_replace_router.InsufficientCreditsError(
-            balance=0,
-            required_credits=25,
+    async def _fake_reserve_generation_quota(*_args, **_kwargs):
+        raise object_replace_router.GenerationQuotaExceededError(
+            reason="free_trial_exhausted",
+            snapshot=GenerationQuotaSnapshot(
+                user_id=user_id,
+                has_active_subscription=False,
+                plan_type=None,
+                quota_scope="free_trial",
+                free_lifetime_generation_limit=1,
+                free_lifetime_generations_used=1,
+                free_lifetime_generations_remaining=0,
+                daily_generation_limit=None,
+                daily_generations_used=1,
+                daily_generations_remaining=None,
+                weekly_generation_limit=None,
+                weekly_generations_used=1,
+                weekly_generations_remaining=None,
+            ),
         )
 
-    monkeypatch.setattr(object_replace_router, "consume_credit", _fake_consume_credit)
+    monkeypatch.setattr(
+        object_replace_router,
+        "reserve_generation_quota",
+        _fake_reserve_generation_quota,
+    )
 
     with pytest.raises(HTTPException) as exc_info:
-        await object_replace_router._consume_object_replace_credit(
+        await object_replace_router._reserve_object_replace_generation(
             db,
-            user_id=uuid.uuid4(),
+            user_id=user_id,
             reference_id="request-123",
         )
 
     assert exc_info.value.status_code == 402
-    assert exc_info.value.detail == {
-        "error": "insufficient_credits",
-        "message": "No credits remaining. Add credits to continue.",
-        "balance": 0,
-        "required_credits": 25,
-        "lifetime_free_credits": object_replace_router.settings.free_lifetime_credits,
-    }
+    assert exc_info.value.detail["error"] == "free_trial_exhausted"
+    assert exc_info.value.detail["quota"]["free_lifetime_generations_remaining"] == 0
     assert db.commit_count == 0
     assert db.rollback_count == 1
 
 
 @pytest.mark.asyncio
-async def test_replace_object_from_upload_charges_before_enqueueing_job(
+async def test_replace_object_from_upload_reserves_quota_before_enqueueing_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -495,16 +512,16 @@ async def test_replace_object_from_upload_charges_before_enqueueing_job(
     monkeypatch.setattr(object_replace_router.settings, "r2_endpoint_url", None)
     monkeypatch.setattr(object_replace_router.settings, "r2_bucket_name", None)
 
-    async def _fake_consume_object_replace_credit(*args, **kwargs):
+    async def _fake_reserve_object_replace_generation(*args, **kwargs):
         assert args[0] is db
         assert kwargs["user_id"] == current_user_id
         assert kwargs["reference_id"]
         assert kwargs["commit"] is False
-        events.append("credit")
+        events.append("quota")
 
     async def _fake_enqueue_job(function_name: str, **kwargs):
         events.append("enqueue")
-        assert events == ["credit", "enqueue"]
+        assert events == ["quota", "enqueue"]
         assert function_name == "process_object_replace_request_task"
         assert kwargs["design_request_id"]
         assert kwargs["image_content_type"] == "image/jpeg"
@@ -519,8 +536,8 @@ async def test_replace_object_from_upload_charges_before_enqueueing_job(
 
     monkeypatch.setattr(
         object_replace_router,
-        "_consume_object_replace_credit",
-        _fake_consume_object_replace_credit,
+        "_reserve_object_replace_generation",
+        _fake_reserve_object_replace_generation,
     )
     monkeypatch.setattr(object_replace_router, "enqueue_job", _fake_enqueue_job)
 
@@ -539,7 +556,7 @@ async def test_replace_object_from_upload_charges_before_enqueueing_job(
         db=db,
     )
 
-    assert events == ["credit", "enqueue"]
+    assert events == ["quota", "enqueue"]
     assert response.design_request_id == db.added[0].id
     assert response.status == "queued"
     assert response.queue_job_id == "object-replace-job-1"
@@ -567,7 +584,7 @@ async def test_replace_object_from_upload_persists_input_to_r2_before_enqueueing
     async def _fake_upload_file_async(key: str, file_data: bytes, content_type: str) -> None:
         uploads.append((key, file_data, content_type))
 
-    async def _fake_consume_object_replace_credit(*args, **kwargs):
+    async def _fake_reserve_object_replace_generation(*args, **kwargs):
         assert args[0] is db
         assert kwargs["user_id"] == current_user_id
         assert kwargs["commit"] is False
@@ -580,8 +597,8 @@ async def test_replace_object_from_upload_persists_input_to_r2_before_enqueueing
     monkeypatch.setattr(object_replace_router, "upload_file_async", _fake_upload_file_async)
     monkeypatch.setattr(
         object_replace_router,
-        "_consume_object_replace_credit",
-        _fake_consume_object_replace_credit,
+        "_reserve_object_replace_generation",
+        _fake_reserve_object_replace_generation,
     )
     monkeypatch.setattr(object_replace_router, "enqueue_job", _fake_enqueue_job)
 
@@ -610,6 +627,118 @@ async def test_replace_object_from_upload_persists_input_to_r2_before_enqueueing
     assert db.added[0].input_upload_id is not None
     assert db.added[0].input_filename is None
     assert db.added[0].input_r2_key == key
+
+
+@pytest.mark.asyncio
+async def test_replace_object_in_image_completes_quota_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_user_id = uuid.uuid4()
+    db = _FakeObjectReplaceDB()
+    events: list[str] = []
+
+    async def _fake_reserve_object_replace_generation(*args, **kwargs):
+        assert args[0] is db
+        assert kwargs["user_id"] == current_user_id
+        assert kwargs["reference_id"]
+        events.append("reserve")
+
+    async def _fake_replace_object(**_kwargs):
+        events.append("provider")
+        return {
+            "image_url": "https://cdn.test/fill.jpg",
+            "mask_url": "https://cdn.test/mask.png",
+            "request_id": "fill-request-1",
+            "mask_request_id": "mask-request-1",
+            "fill_request_id": "fill-request-1",
+            "prompt": "enhanced prompt",
+        }
+
+    async def _fake_complete_object_replace_generation(*args, **kwargs):
+        assert args[0] is db
+        assert kwargs["user_id"] == current_user_id
+        assert kwargs["reference_id"]
+        events.append("complete")
+
+    monkeypatch.setattr(
+        object_replace_router,
+        "_reserve_object_replace_generation",
+        _fake_reserve_object_replace_generation,
+    )
+    monkeypatch.setattr(fal_service, "replace_object", _fake_replace_object)
+    monkeypatch.setattr(
+        object_replace_router,
+        "_complete_object_replace_generation",
+        _fake_complete_object_replace_generation,
+    )
+
+    response = await object_replace_router.replace_object_in_image(
+        ReplaceObjectRequest(
+            original_image_url="https://example.test/room.jpg",
+            prompt="replace sofa",
+            point={"x": 10, "y": 10, "label": 1},
+            image_width=100,
+            image_height=100,
+        ),
+        current_user_id=current_user_id,
+        db=db,
+    )
+
+    assert events == ["reserve", "provider", "complete"]
+    assert response.image_url == "https://cdn.test/fill.jpg"
+
+
+@pytest.mark.asyncio
+async def test_replace_object_in_image_releases_quota_on_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_user_id = uuid.uuid4()
+    db = _FakeObjectReplaceDB()
+    events: list[str] = []
+
+    async def _fake_reserve_object_replace_generation(*args, **kwargs):
+        assert args[0] is db
+        assert kwargs["user_id"] == current_user_id
+        assert kwargs["reference_id"]
+        events.append("reserve")
+
+    async def _fake_replace_object(**_kwargs):
+        events.append("provider")
+        raise fal_service.ObjectReplaceFalError("provider failed")
+
+    async def _fake_release_object_replace_generation(*args, **kwargs):
+        assert args[0] is db
+        assert kwargs["user_id"] == current_user_id
+        assert kwargs["reference_id"]
+        events.append("release")
+
+    monkeypatch.setattr(
+        object_replace_router,
+        "_reserve_object_replace_generation",
+        _fake_reserve_object_replace_generation,
+    )
+    monkeypatch.setattr(fal_service, "replace_object", _fake_replace_object)
+    monkeypatch.setattr(
+        object_replace_router,
+        "_release_object_replace_generation",
+        _fake_release_object_replace_generation,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await object_replace_router.replace_object_in_image(
+            ReplaceObjectRequest(
+                original_image_url="https://example.test/room.jpg",
+                prompt="replace sofa",
+                point={"x": 10, "y": 10, "label": 1},
+                image_width=100,
+                image_height=100,
+            ),
+            current_user_id=current_user_id,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 502
+    assert events == ["reserve", "provider", "release"]
 
 
 @pytest.mark.asyncio

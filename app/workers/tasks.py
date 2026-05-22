@@ -6,20 +6,17 @@ import uuid
 
 from loguru import logger
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db_context
 from app.services.design_generation import DesignGenerationError, generate_image
-from app.services.design_generation.service import get_model_credit_cost
 from app.services.object_replace import fal_service
 from app.services.object_replace.schemas import ObjectReplacePoint
-from app.services.platform.credit_service import (
-    InsufficientCreditsError,
-    add_credits,
-    consume_credit,
+from app.services.platform.generation_quota_service import (
+    complete_generation_quota,
+    release_generation_quota,
 )
-from app.services.platform.models import CreditLedgerEvent, DesignRequest
+from app.services.platform.models import DesignRequest
 from app.services.r2 import (
     delete_object_async,
     download_to_path_async,
@@ -93,66 +90,6 @@ def _cleanup_temp_file(file_path: Path) -> None:
         logger.warning("Failed to cleanup temp design input | path={} | error={}", file_path, exc)
 
 
-def _build_credit_refund_idempotency_key(design_request_id: uuid.UUID) -> str:
-    return f"design-request-refund:{design_request_id}"
-
-
-async def _refund_design_request_credit(
-    db: AsyncSession,
-    *,
-    design_request: DesignRequest,
-    failure_reason: str,
-) -> bool:
-    request_id = str(design_request.id)
-
-    result = await db.execute(
-        select(CreditLedgerEvent)
-        .where(CreditLedgerEvent.user_id == design_request.user_id)
-        .where(CreditLedgerEvent.source == "design_request")
-        .where(CreditLedgerEvent.reference_id == request_id)
-        .order_by(CreditLedgerEvent.created_at.desc())
-        .limit(1)
-    )
-    original_charge_event = result.scalar_one_or_none()
-
-    if original_charge_event is None:
-        logger.warning(
-            "Skipping credit restore: original charge event not found | request_id={}",
-            request_id,
-        )
-        return False
-
-    credits_to_restore = abs(int(original_charge_event.delta))
-    if credits_to_restore <= 0:
-        logger.warning(
-            "Skipping credit restore: original charge delta is invalid | "
-            "request_id={} | delta={}",
-            request_id,
-            original_charge_event.delta,
-        )
-        return False
-
-    refund_reason = f"Design generation failed: {failure_reason}"[:255]
-    mutation = await add_credits(
-        db,
-        user_id=design_request.user_id,
-        credits=credits_to_restore,
-        source="design_request_refund",
-        reason=refund_reason,
-        reference_id=request_id,
-        idempotency_key=_build_credit_refund_idempotency_key(design_request.id),
-    )
-    logger.info(
-        "Restored design request credits | request_id={} | credits={} | "
-        "idempotent={} | balance={}",
-        request_id,
-        credits_to_restore,
-        mutation.idempotent,
-        mutation.balance,
-    )
-    return True
-
-
 async def process_design_request_task(
     ctx: dict[str, Any],
     design_request_id: str,
@@ -216,38 +153,21 @@ async def process_design_request_task(
                 logger.error("Design request missing during completion | request_id={}", request_id)
                 return {"status": "missing", "design_request_id": design_request_id}
 
-            model_cost = get_model_credit_cost(result_obj.model) if result_obj.model else 25
-            if model_cost > 25:
-                try:
-                    await consume_credit(
-                        db,
-                        user_id=design_request.user_id,
-                        source="design_request_fallback",
-                        reason=f"Fallback model used: {result_obj.model}",
-                        reference_id=design_request_id,
-                        credits=model_cost - 25,
-                    )
-                    logger.info(
-                        "Additional credits charged for fallback model | "
-                        "request_id={} | model={} | extra_credits={}",
-                        request_id,
-                        result_obj.model,
-                        model_cost - 25,
-                    )
-                except InsufficientCreditsError as exc:
-                    raise DesignGenerationError(
-                        "Fallback model required additional credits, "
-                        f"but only {exc.balance} credits were available."
-                    ) from exc
-                except Exception:
-                    raise DesignGenerationError(
-                        "Could not charge additional credits required for "
-                        f"fallback model {result_obj.model}."
-                    ) from None
-
             design_request.status = "completed"
             design_request.completed_at = datetime.now(UTC)
             design_request.output_preview_url = result_obj.url
+            completed_usage = await complete_generation_quota(
+                db,
+                user_id=design_request.user_id,
+                generation_type="design_request",
+                reference_id=design_request_id,
+            )
+            if not completed_usage:
+                logger.warning(
+                    "Design request quota reservation not found during completion | "
+                    "request_id={}",
+                    request_id,
+                )
             await db.commit()
 
     except DesignGenerationError as exc:
@@ -260,14 +180,15 @@ async def process_design_request_task(
 
             if design_request is not None:
                 try:
-                    await _refund_design_request_credit(
+                    await release_generation_quota(
                         db,
-                        design_request=design_request,
-                        failure_reason=error_msg,
+                        user_id=design_request.user_id,
+                        generation_type="design_request",
+                        reference_id=design_request_id,
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to restore design request credits after generation failure | "
+                        "Failed to release design request quota after generation failure | "
                         "request_id={}",
                         request_id,
                     )
@@ -293,14 +214,15 @@ async def process_design_request_task(
 
             if design_request is not None:
                 try:
-                    await _refund_design_request_credit(
+                    await release_generation_quota(
                         db,
-                        design_request=design_request,
-                        failure_reason=error_msg,
+                        user_id=design_request.user_id,
+                        generation_type="design_request",
+                        reference_id=design_request_id,
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to restore design request credits after unexpected "
+                        "Failed to release design request quota after unexpected "
                         "worker failure | request_id={}",
                         request_id,
                     )
@@ -388,6 +310,18 @@ async def process_object_replace_request_task(
             design_request.completed_at = datetime.now(UTC)
             design_request.output_preview_url = str(result_obj["image_url"])
             design_request.error_message = None
+            completed_usage = await complete_generation_quota(
+                db,
+                user_id=design_request.user_id,
+                generation_type="object_replace",
+                reference_id=design_request_id,
+            )
+            if not completed_usage:
+                logger.warning(
+                    "Object replace quota reservation not found during completion | "
+                    "request_id={}",
+                    request_id,
+                )
             await db.commit()
 
     except (DesignGenerationError, fal_service.ObjectReplaceFalError) as exc:
@@ -399,6 +333,19 @@ async def process_object_replace_request_task(
             design_request = result.scalar_one_or_none()
 
             if design_request is not None:
+                try:
+                    await release_generation_quota(
+                        db,
+                        user_id=design_request.user_id,
+                        generation_type="object_replace",
+                        reference_id=design_request_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to release object replace quota after generation failure | "
+                        "request_id={}",
+                        request_id,
+                    )
                 design_request.status = "failed"
                 design_request.failed_at = datetime.now(UTC)
                 design_request.error_message = error_msg
@@ -419,6 +366,19 @@ async def process_object_replace_request_task(
             design_request = result.scalar_one_or_none()
 
             if design_request is not None:
+                try:
+                    await release_generation_quota(
+                        db,
+                        user_id=design_request.user_id,
+                        generation_type="object_replace",
+                        reference_id=design_request_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to release object replace quota after unexpected "
+                        "worker failure | request_id={}",
+                        request_id,
+                    )
                 design_request.status = "failed"
                 design_request.failed_at = datetime.now(UTC)
                 design_request.error_message = error_msg

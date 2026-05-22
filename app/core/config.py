@@ -41,10 +41,9 @@ class Settings(BaseSettings):
     higgsfield_design_quality: str = "high"
     higgsfield_design_aspect_ratio: str = "1:1"
     app_environment: str = "development"
-    free_lifetime_credits: int = Field(default=25, ge=0, le=1000)
-    credits_internal_api_key: str | None = Field(default=None)
-    enable_credit_self_topup: bool = False
-    credit_self_topup_amount: int = Field(default=75, ge=1, le=1000)
+    free_lifetime_generation_limit: int = Field(default=1, ge=0, le=1000)
+    subscription_daily_generation_limit: int = Field(default=25, ge=1, le=10000)
+    subscription_weekly_generation_limit: int = Field(default=100, ge=1, le=100000)
     api_v1_prefix: str = "/api/v1"
     log_level: str = "INFO"
 
@@ -66,8 +65,6 @@ class Settings(BaseSettings):
     # The fallback values below are only safe for local development placeholders.
     subscription_weekly_product_id: str = "weekly"
     subscription_yearly_product_id: str = "yearly"
-    subscription_weekly_credits: int = Field(default=350, ge=1, le=10000)
-    subscription_yearly_credits: int = Field(default=2000, ge=1, le=100000)
 
     # ── Database ──────────────────────────────────────────────────────────────
     db_host: str = "postgres"
